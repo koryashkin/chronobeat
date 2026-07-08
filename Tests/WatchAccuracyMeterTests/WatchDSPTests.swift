@@ -97,15 +97,47 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.detectionThreshold, 0.0005)
     }
 
+    func testDetectsSupportedLowerBeatRateSyntheticWatch() {
+        let lowerBPH = BeatRate.bph21600.rawValue
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: -6, nominalBPH: lowerBPH)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: lowerBPH,
+                                      routeDescription: "Lower beat rate synthetic watch")
+
+        XCTAssertEqual(result.quality, .high)
+        XCTAssertEqual(result.rateSecondsPerDay, -6, accuracy: 1.5)
+        XCTAssertEqual(result.detectedBPH, 21_598.5, accuracy: 0.8)
+        XCTAssertGreaterThan(result.validPeakCount, 300)
+        XCTAssertGreaterThan(result.beatCoverage, 0.98)
+    }
+
+    func testWrongSelectedBeatRateIsRejectedByCoverageGate() {
+        let actualBPH = BeatRate.bph21600.rawValue
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0, nominalBPH: actualBPH)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Wrong selected beat rate")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertLessThan(result.beatCoverage, 0.80)
+        XCTAssertLessThan(result.qualityScore, 50)
+    }
+
     private func makeSyntheticWatchSamples(
         rateSecondsPerDay: Double,
+        nominalBPH: Int? = nil,
         duration: Double = 60,
         amplitudeScale: Float = 1,
         skipBeat: (Int) -> Bool = { _ in false }
     ) -> [Float] {
         let sampleCount = Int(duration * sampleRate)
         var samples = Array(repeating: Float(0), count: sampleCount)
-        let detectedBPH = Double(selectedBPH) * (1 + rateSecondsPerDay / 86_400)
+        let expectedBPH = Double(nominalBPH ?? selectedBPH)
+        let detectedBPH = expectedBPH * (1 + rateSecondsPerDay / 86_400)
         let period = 3_600 / detectedBPH
 
         var beatIndex = 0
@@ -145,6 +177,64 @@ final class WatchDSPTests: XCTestCase {
     }
 }
 
+final class DomainModelTests: XCTestCase {
+    func testBeatRateCasesExposeExpectedLabelsAndIds() {
+        XCTAssertEqual(BeatRate.allCases.map(\.rawValue),
+                       [18_000, 19_800, 21_600, 25_200, 28_800, 36_000])
+        XCTAssertEqual(BeatRate.bph28800.label, "28800 bph")
+        XCTAssertEqual(BeatRate.bph28800.id, 28_800)
+    }
+
+    func testSignalQualityLabelsAreUserReadable() {
+        XCTAssertEqual(SignalQuality.high.label, "High")
+        XCTAssertEqual(SignalQuality.medium.label, "Medium")
+        XCTAssertEqual(SignalQuality.low.label, "Low")
+    }
+
+    func testRateTextRoundsAndPreservesPositiveSign() {
+        XCTAssertEqual(Self.makeResult(rateSecondsPerDay: 8.4).rateText, "+8 sec/day")
+        XCTAssertEqual(Self.makeResult(rateSecondsPerDay: -3.6).rateText, "-4 sec/day")
+        XCTAssertEqual(Self.makeResult(rateSecondsPerDay: 0.4).rateText, "0 sec/day")
+    }
+
+    func testHighQualityInterpretationDistinguishesStableFastAndSlowResults() {
+        XCTAssertTrue(Self.makeResult(rateSecondsPerDay: 4).interpretation.contains("reasonably stable"))
+        XCTAssertTrue(Self.makeResult(rateSecondsPerDay: 24).interpretation.contains("fast"))
+        XCTAssertTrue(Self.makeResult(rateSecondsPerDay: -24).interpretation.contains("slow"))
+    }
+
+    func testLowQualityInterpretationDistinguishesMissingCandidatesFromUnstableGrid() {
+        let missing = Self.makeResult(quality: .low, detectedPeakCount: 0)
+        let unstable = Self.makeResult(quality: .low, detectedPeakCount: 80)
+
+        XCTAssertTrue(missing.interpretation.contains("No tick candidates"))
+        XCTAssertTrue(unstable.interpretation.contains("did not form a stable beat grid"))
+    }
+
+    private static func makeResult(
+        rateSecondsPerDay: Double = 0,
+        quality: SignalQuality = .high,
+        detectedPeakCount: Int = 480
+    ) -> WatchMeasurementResult {
+        WatchMeasurementResult(selectedBPH: 28_800,
+                               detectedBPH: 28_800,
+                               rateSecondsPerDay: rateSecondsPerDay,
+                               qualityScore: quality == .high ? 100 : 10,
+                               quality: quality,
+                               detectedPeakCount: detectedPeakCount,
+                               validPeakCount: quality == .high ? 480 : 0,
+                               beatCoverage: quality == .high ? 1 : 0,
+                               outlierRatio: quality == .high ? 0 : 1,
+                               detectionThreshold: 0.01,
+                               envelopeMedian: 0.001,
+                               envelopeP95: 0.01,
+                               sampleRate: 48_000,
+                               sampleCount: 2_880_000,
+                               routeDescription: "Synthetic",
+                               routeWarning: nil)
+    }
+}
+
 final class MeasurementStateTests: XCTestCase {
     func testBeatRateSelectionIsEditableOnlyWhenIdle() {
         XCTAssertTrue(MeasurementState.idle.canEditBeatRate)
@@ -172,6 +262,7 @@ final class MeasurementStateTests: XCTestCase {
                                quality: .high,
                                detectedPeakCount: 480,
                                validPeakCount: 480,
+                               beatCoverage: 1,
                                outlierRatio: 0,
                                detectionThreshold: 0.01,
                                envelopeMedian: 0.001,

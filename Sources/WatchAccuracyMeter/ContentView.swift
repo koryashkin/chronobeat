@@ -162,6 +162,7 @@ struct ResultView: View {
                 Text("Quality score: \(String(format: "%.0f", result.qualityScore)) / 100")
                 Text("Candidate ticks: \(result.detectedPeakCount)")
                 Text("Valid beats: \(result.validPeakCount)")
+                Text("Beat coverage: \(String(format: "%.1f", result.beatCoverage * 100))%")
                 Text("Outlier ratio: \(String(format: "%.1f", result.outlierRatio * 100))%")
                 Text("Detection threshold: \(String(format: "%.6f", result.detectionThreshold))")
                 Text("Envelope median: \(String(format: "%.6f", result.envelopeMedian))")

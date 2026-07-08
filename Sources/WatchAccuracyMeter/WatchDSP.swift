@@ -64,6 +64,7 @@ struct WatchMeasurementResult {
     let quality: SignalQuality
     let detectedPeakCount: Int
     let validPeakCount: Int
+    let beatCoverage: Double
     let outlierRatio: Double
     let detectionThreshold: Double
     let envelopeMedian: Double
@@ -135,6 +136,7 @@ enum WatchDSP {
         let detectedBPH = 3600.0 / fit.period
         let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
         let qualityScore = qualityScore(validPeaks: fit.validCount,
+                                        beatCoverage: fit.beatCoverage,
                                         outlierRatio: fit.outlierRatio,
                                         windowRates: fit.windowRates)
         let quality: SignalQuality
@@ -153,6 +155,7 @@ enum WatchDSP {
                                       quality: quality,
                                       detectedPeakCount: detection.stats.candidatePeakCount,
                                       validPeakCount: fit.validCount,
+                                      beatCoverage: fit.beatCoverage,
                                       outlierRatio: fit.outlierRatio,
                                       detectionThreshold: detection.stats.threshold,
                                       envelopeMedian: detection.stats.envelopeMedian,
@@ -179,6 +182,7 @@ enum WatchDSP {
                                quality: .low,
                                detectedPeakCount: detectionStats.candidatePeakCount,
                                validPeakCount: 0,
+                               beatCoverage: 0,
                                outlierRatio: 1,
                                detectionThreshold: detectionStats.threshold,
                                envelopeMedian: detectionStats.envelopeMedian,
@@ -315,6 +319,7 @@ enum WatchDSP {
     private struct FitResult {
         let period: Double
         let validCount: Int
+        let beatCoverage: Double
         let outlierRatio: Double
         let windowRates: [Double]
     }
@@ -360,13 +365,26 @@ enum WatchDSP {
         }
 
         let outlierRatio = 1.0 - Double(pairs.count) / Double(peaks.count)
+        let beatCoverage = beatCoverage(for: pairs)
         let windowRates = windowRateEstimates(pairs: pairs, selectedBPH: selectedBPH)
 
         guard slope > 0 else { return nil }
         return FitResult(period: slope,
                          validCount: pairs.count,
+                         beatCoverage: beatCoverage,
                          outlierRatio: max(0, min(1, outlierRatio)),
                          windowRates: windowRates)
+    }
+
+    private static func beatCoverage(for pairs: [(n: Double, t: Double)]) -> Double {
+        guard let first = pairs.first?.n,
+              let last = pairs.last?.n,
+              last >= first else {
+            return 0
+        }
+
+        let expectedSlots = max(1, Int(last - first + 1))
+        return min(1, Double(pairs.count) / Double(expectedSlots))
     }
 
     private static func linearRegressionSlope(pairs: [(n: Double, t: Double)]) -> Double? {
@@ -409,7 +427,7 @@ enum WatchDSP {
         return rates
     }
 
-    private static func qualityScore(validPeaks: Int, outlierRatio: Double, windowRates: [Double]) -> Double {
+    private static func qualityScore(validPeaks: Int, beatCoverage: Double, outlierRatio: Double, windowRates: [Double]) -> Double {
         let peakScore = min(100, Double(validPeaks) / 350.0 * 100.0)
         let outlierScore = max(0, 100.0 - outlierRatio * 300.0)
 
@@ -423,7 +441,9 @@ enum WatchDSP {
             stabilityScore = 40
         }
 
-        return max(0, min(100, peakScore * 0.35 + outlierScore * 0.30 + stabilityScore * 0.35))
+        let baseScore = peakScore * 0.35 + outlierScore * 0.30 + stabilityScore * 0.35
+        let beatCoveragePenalty = max(0, min(1, (beatCoverage - 0.70) / 0.25))
+        return max(0, min(100, baseScore * beatCoveragePenalty))
     }
 }
 
