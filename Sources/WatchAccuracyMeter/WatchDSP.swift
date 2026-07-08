@@ -21,7 +21,28 @@ enum MeasurementState {
     case failed(String)
 }
 
-enum SignalQuality: String {
+extension MeasurementState {
+    var canEditBeatRate: Bool {
+        if case .idle = self { return true }
+        return false
+    }
+
+    var isMeasuring: Bool {
+        if case .measuring = self { return true }
+        return false
+    }
+
+    var requiresForegroundAudioSession: Bool {
+        switch self {
+        case .requestingPermission, .measuring:
+            return true
+        case .idle, .analyzing, .result, .failed:
+            return false
+        }
+    }
+}
+
+enum SignalQuality: String, Equatable {
     case high
     case medium
     case low
@@ -41,8 +62,16 @@ struct WatchMeasurementResult {
     let rateSecondsPerDay: Double
     let qualityScore: Double
     let quality: SignalQuality
+    let detectedPeakCount: Int
     let validPeakCount: Int
     let outlierRatio: Double
+    let detectionThreshold: Double
+    let envelopeMedian: Double
+    let envelopeP95: Double
+    let sampleRate: Double
+    let sampleCount: Int
+    let routeDescription: String
+    let routeWarning: String?
 
     var rateText: String {
         let rounded = Int(rateSecondsPerDay.rounded())
@@ -61,25 +90,46 @@ struct WatchMeasurementResult {
         case .medium:
             return "Approximate result. Try another measurement in a quieter room to confirm."
         case .low:
-            return "Measurement quality is low. Move the watch closer to the microphone and try again."
+            if detectedPeakCount == 0 {
+                return "No tick candidates were detected. Put the watch caseback directly against the bottom microphone and try again."
+            }
+            return "Tick candidates were detected, but they did not form a stable beat grid. Keep the watch still and try again."
         }
     }
 }
 
 enum WatchDSP {
-    static func analyze(samples: [Float], sampleRate: Double, selectedBPH: Int) -> WatchMeasurementResult {
+    static func analyze(
+        samples: [Float],
+        sampleRate: Double,
+        selectedBPH: Int,
+        routeDescription: String = "Unknown",
+        routeWarning: String? = nil
+    ) -> WatchMeasurementResult {
         guard samples.count > Int(sampleRate * 10) else {
-            return fallback(selectedBPH: selectedBPH, reasonScore: 0)
+            return fallback(selectedBPH: selectedBPH,
+                            reasonScore: 0,
+                            detectionStats: .empty,
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning)
         }
 
         let processed = preprocess(samples)
         let expectedPeriod = 3600.0 / Double(selectedBPH)
         let envelope = makeEnvelope(processed, sampleRate: sampleRate)
-        let peaks = detectPeaks(envelope: envelope, sampleRate: sampleRate, expectedPeriod: expectedPeriod)
-        let fit = robustFit(peaks: peaks, selectedBPH: selectedBPH)
+        let detection = detectPeaks(envelope: envelope, sampleRate: sampleRate, expectedPeriod: expectedPeriod)
+        let fit = robustFit(peaks: detection.peaks, selectedBPH: selectedBPH)
 
         guard let fit else {
-            return fallback(selectedBPH: selectedBPH, reasonScore: 10)
+            return fallback(selectedBPH: selectedBPH,
+                            reasonScore: 10,
+                            detectionStats: detection.stats,
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning)
         }
 
         let detectedBPH = 3600.0 / fit.period
@@ -101,18 +151,42 @@ enum WatchDSP {
                                       rateSecondsPerDay: rate,
                                       qualityScore: qualityScore,
                                       quality: quality,
+                                      detectedPeakCount: detection.stats.candidatePeakCount,
                                       validPeakCount: fit.validCount,
-                                      outlierRatio: fit.outlierRatio)
+                                      outlierRatio: fit.outlierRatio,
+                                      detectionThreshold: detection.stats.threshold,
+                                      envelopeMedian: detection.stats.envelopeMedian,
+                                      envelopeP95: detection.stats.envelopeP95,
+                                      sampleRate: sampleRate,
+                                      sampleCount: samples.count,
+                                      routeDescription: routeDescription,
+                                      routeWarning: routeWarning)
     }
 
-    private static func fallback(selectedBPH: Int, reasonScore: Double) -> WatchMeasurementResult {
+    private static func fallback(
+        selectedBPH: Int,
+        reasonScore: Double,
+        detectionStats: PeakDetectionStats,
+        sampleRate: Double,
+        sampleCount: Int,
+        routeDescription: String,
+        routeWarning: String?
+    ) -> WatchMeasurementResult {
         WatchMeasurementResult(selectedBPH: selectedBPH,
                                detectedBPH: Double(selectedBPH),
                                rateSecondsPerDay: 0,
                                qualityScore: reasonScore,
                                quality: .low,
+                               detectedPeakCount: detectionStats.candidatePeakCount,
                                validPeakCount: 0,
-                               outlierRatio: 1)
+                               outlierRatio: 1,
+                               detectionThreshold: detectionStats.threshold,
+                               envelopeMedian: detectionStats.envelopeMedian,
+                               envelopeP95: detectionStats.envelopeP95,
+                               sampleRate: sampleRate,
+                               sampleCount: sampleCount,
+                               routeDescription: routeDescription,
+                               routeWarning: routeWarning)
     }
 
     private static func preprocess(_ input: [Float]) -> [Float] {
@@ -154,13 +228,34 @@ enum WatchDSP {
         return envelope
     }
 
-    private static func detectPeaks(envelope: [Float], sampleRate: Double, expectedPeriod: Double) -> [Double] {
-        guard envelope.count > 3 else { return [] }
+    private struct PeakDetectionResult {
+        let peaks: [Double]
+        let stats: PeakDetectionStats
+    }
+
+    private struct PeakDetectionStats {
+        let candidatePeakCount: Int
+        let threshold: Double
+        let envelopeMedian: Double
+        let envelopeP95: Double
+
+        static let empty = PeakDetectionStats(candidatePeakCount: 0,
+                                              threshold: 0,
+                                              envelopeMedian: 0,
+                                              envelopeP95: 0)
+    }
+
+    private static func detectPeaks(envelope: [Float], sampleRate: Double, expectedPeriod: Double) -> PeakDetectionResult {
+        guard envelope.count > 3 else {
+            return PeakDetectionResult(peaks: [], stats: .empty)
+        }
 
         let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
-        let median = sortedSample[sortedSample.count / 2]
-        let p95 = sortedSample[Int(Double(sortedSample.count - 1) * 0.95)]
-        let threshold = median + max((p95 - median) * 0.35, 0.0005)
+        let median = percentile(sortedSample, 0.50)
+        let p90 = percentile(sortedSample, 0.90)
+        let p95 = percentile(sortedSample, 0.95)
+        let p99 = percentile(sortedSample, 0.99)
+        let threshold = adaptiveThreshold(median: median, p90: p90, p95: p95, p99: p99)
 
         let minDistance = Int(sampleRate * expectedPeriod * 0.45)
         var peaks: [Double] = []
@@ -193,7 +288,28 @@ enum WatchDSP {
             }
         }
 
-        return peaks
+        let stats = PeakDetectionStats(candidatePeakCount: peaks.count,
+                                       threshold: Double(threshold),
+                                       envelopeMedian: Double(median),
+                                       envelopeP95: Double(p95))
+        return PeakDetectionResult(peaks: peaks, stats: stats)
+    }
+
+    private static func percentile(_ sortedValues: [Float], _ fraction: Double) -> Float {
+        guard !sortedValues.isEmpty else { return 0 }
+        let clamped = max(0, min(1, fraction))
+        let index = Int((Double(sortedValues.count - 1) * clamped).rounded())
+        return sortedValues[index]
+    }
+
+    private static func adaptiveThreshold(median: Float, p90: Float, p95: Float, p99: Float) -> Float {
+        let nearNoiseSpread = max(p90 - median, 0)
+        let upperNoiseSpread = max(p95 - median, 0)
+        let transientSpread = max(p99 - median, 0)
+        let thresholdLift = max(nearNoiseSpread * 1.8,
+                                upperNoiseSpread * 0.55,
+                                transientSpread * 0.10)
+        return median + thresholdLift
     }
 
     private struct FitResult {
@@ -314,7 +430,7 @@ enum WatchDSP {
 private extension Array where Element == Float {
     func strideSample(maxCount: Int) -> [Float] {
         guard count > maxCount else { return self }
-        let strideBy = max(1, count / maxCount)
+        let strideBy = Swift.max(1, count / maxCount)
         var result: [Float] = []
         result.reserveCapacity(maxCount)
         var index = 0

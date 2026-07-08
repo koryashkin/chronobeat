@@ -1,0 +1,417 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		4926A74A1555E29B3F605E0A /* AudioWatchMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */; };
+		4F0297FC9F66107E3D8EDCFB /* WatchAccuracyMeterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */; };
+		5FE6A2AEF60D91B02575618F /* WatchDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6A032089774DB52785B700 /* WatchDSPTests.swift */; };
+		642AC5BA09D443AAD50E2388 /* WatchDSP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */; };
+		A30D4144737B0E52DB2A153E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */; };
+		B663030ECD62538FB9F91A1E /* MeasurementViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D45683291B66B03E6F7ACA /* MeasurementViewModel.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		9FCD54DD3151F3A04B998C9D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = F707B5184E20793E2B613664 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 699734845933B7D74D3B1C94;
+			remoteInfo = WatchAccuracyMeter;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		18D45683291B66B03E6F7ACA /* MeasurementViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeasurementViewModel.swift; sourceTree = "<group>"; };
+		27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioWatchMeter.swift; sourceTree = "<group>"; };
+		2B27B6B57A04DC6FAE82FCC2 /* WatchAccuracyMeterTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchAccuracyMeterTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAccuracyMeterApp.swift; sourceTree = "<group>"; };
+		497144F15FA91B5380E79D32 /* WatchAccuracyMeter.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchAccuracyMeter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSP.swift; sourceTree = "<group>"; };
+		97FF9BB9243E8812CA39FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		AD6A032089774DB52785B700 /* WatchDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSPTests.swift; sourceTree = "<group>"; };
+		D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1FB0288C458743DC52BAD1A8 = {
+			isa = PBXGroup;
+			children = (
+				AEFDDC93504DCDEF4FF9D39D /* WatchAccuracyMeter */,
+				A1FF4AEA1904A892D3C3D49F /* WatchAccuracyMeterTests */,
+				CDAE747CC140A7F4480C9D1A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1FF4AEA1904A892D3C3D49F /* WatchAccuracyMeterTests */ = {
+			isa = PBXGroup;
+			children = (
+				AD6A032089774DB52785B700 /* WatchDSPTests.swift */,
+			);
+			name = WatchAccuracyMeterTests;
+			path = Tests/WatchAccuracyMeterTests;
+			sourceTree = "<group>";
+		};
+		AEFDDC93504DCDEF4FF9D39D /* WatchAccuracyMeter */ = {
+			isa = PBXGroup;
+			children = (
+				27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */,
+				D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */,
+				97FF9BB9243E8812CA39FEEB /* Info.plist */,
+				18D45683291B66B03E6F7ACA /* MeasurementViewModel.swift */,
+				3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */,
+				76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */,
+			);
+			name = WatchAccuracyMeter;
+			path = Sources/WatchAccuracyMeter;
+			sourceTree = "<group>";
+		};
+		CDAE747CC140A7F4480C9D1A /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				497144F15FA91B5380E79D32 /* WatchAccuracyMeter.app */,
+				2B27B6B57A04DC6FAE82FCC2 /* WatchAccuracyMeterTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		699734845933B7D74D3B1C94 /* WatchAccuracyMeter */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7444019A89060C45A86197B5 /* Build configuration list for PBXNativeTarget "WatchAccuracyMeter" */;
+			buildPhases = (
+				3AD607147F5FBBC0ADE8445E /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = WatchAccuracyMeter;
+			packageProductDependencies = (
+			);
+			productName = WatchAccuracyMeter;
+			productReference = 497144F15FA91B5380E79D32 /* WatchAccuracyMeter.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C1CA80FBA2300EC7D07333C2 /* WatchAccuracyMeterTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 72891CAA80CC91C4D471150A /* Build configuration list for PBXNativeTarget "WatchAccuracyMeterTests" */;
+			buildPhases = (
+				2557EF0BB066A22EC0F4F411 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				419972BB80AA6B7769987492 /* PBXTargetDependency */,
+			);
+			name = WatchAccuracyMeterTests;
+			packageProductDependencies = (
+			);
+			productName = WatchAccuracyMeterTests;
+			productReference = 2B27B6B57A04DC6FAE82FCC2 /* WatchAccuracyMeterTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F707B5184E20793E2B613664 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					699734845933B7D74D3B1C94 = {
+						DevelopmentTeam = THT3D327QD;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = E4828DD9C77D228F74BA50B0 /* Build configuration list for PBXProject "WatchAccuracyMeter" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 1FB0288C458743DC52BAD1A8;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = CDAE747CC140A7F4480C9D1A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				699734845933B7D74D3B1C94 /* WatchAccuracyMeter */,
+				C1CA80FBA2300EC7D07333C2 /* WatchAccuracyMeterTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		2557EF0BB066A22EC0F4F411 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5FE6A2AEF60D91B02575618F /* WatchDSPTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		3AD607147F5FBBC0ADE8445E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4926A74A1555E29B3F605E0A /* AudioWatchMeter.swift in Sources */,
+				A30D4144737B0E52DB2A153E /* ContentView.swift in Sources */,
+				B663030ECD62538FB9F91A1E /* MeasurementViewModel.swift in Sources */,
+				4F0297FC9F66107E3D8EDCFB /* WatchAccuracyMeterApp.swift in Sources */,
+				642AC5BA09D443AAD50E2388 /* WatchDSP.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		419972BB80AA6B7769987492 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 699734845933B7D74D3B1C94 /* WatchAccuracyMeter */;
+			targetProxy = 9FCD54DD3151F3A04B998C9D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		215AB24962EA53BD4F4D897A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chronobeat.WatchAccuracyMeterTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchAccuracyMeter.app/WatchAccuracyMeter";
+			};
+			name = Release;
+		};
+		286E26F07DFF2E5312327C16 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = THT3D327QD;
+				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chronobeat.WatchAccuracyMeter;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		54B686D852569EC91DF25DD5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chronobeat.WatchAccuracyMeterTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WatchAccuracyMeter.app/WatchAccuracyMeter";
+			};
+			name = Debug;
+		};
+		74157869677EFC8997B7B043 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		8CDFBB7A98AD53B8BA9E3C9F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		E56F7715F2525213DEDF933E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = THT3D327QD;
+				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.chronobeat.WatchAccuracyMeter;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		72891CAA80CC91C4D471150A /* Build configuration list for PBXNativeTarget "WatchAccuracyMeterTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				54B686D852569EC91DF25DD5 /* Debug */,
+				215AB24962EA53BD4F4D897A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7444019A89060C45A86197B5 /* Build configuration list for PBXNativeTarget "WatchAccuracyMeter" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				286E26F07DFF2E5312327C16 /* Debug */,
+				E56F7715F2525213DEDF933E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E4828DD9C77D228F74BA50B0 /* Build configuration list for PBXProject "WatchAccuracyMeter" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8CDFBB7A98AD53B8BA9E3C9F /* Debug */,
+				74157869677EFC8997B7B043 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F707B5184E20793E2B613664 /* Project object */;
+}
