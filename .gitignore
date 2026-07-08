@@ -18,6 +18,7 @@ xcuserdata/
 *.m4a
 *.pcm
 DebugCaptures/
+!Tests/WatchAccuracyMeterTests/Fixtures/*.wav
 
 # Secrets
 .env

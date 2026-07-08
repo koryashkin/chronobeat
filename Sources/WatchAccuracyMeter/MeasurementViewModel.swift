@@ -21,12 +21,18 @@ final class MeasurementViewModel: ObservableObject {
         state.canEditBeatRate
     }
 
-    private let audioMeter = AudioWatchMeter()
-    private let measurementDuration: TimeInterval = 60
+    private let audioMeter: any WatchAudioMetering
+    private let measurementDuration: TimeInterval
     private var timerTask: Task<Void, Never>?
     private var measurementTask: Task<Void, Never>?
     private var lastObservedSampleCount = 0
     private var lastSampleGrowthDate = Date.distantPast
+
+    init(audioMeter: any WatchAudioMetering = AudioWatchMeter(),
+         measurementDuration: TimeInterval = 60) {
+        self.audioMeter = audioMeter
+        self.measurementDuration = measurementDuration
+    }
 
     func startMeasurement() {
         guard state.canEditBeatRate else { return }
