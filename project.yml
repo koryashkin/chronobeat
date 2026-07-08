@@ -39,6 +39,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Tests/WatchAccuracyMeterTests
+    resources:
+      - path: Tests/WatchAccuracyMeterTests/Fixtures
     dependencies:
       - target: WatchAccuracyMeter
     settings:

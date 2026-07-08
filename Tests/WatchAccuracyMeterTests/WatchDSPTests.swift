@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import WatchAccuracyMeter
 
 final class WatchDSPTests: XCTestCase {
@@ -127,11 +128,98 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
+    func testKingSeikoFixtureDetectsRealTickGrid() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "King Seiko fixture")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.detectedPeakCount, 120)
+        XCTAssertGreaterThanOrEqual(result.validPeakCount, 100)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.70)
+    }
+
+    func testKingSeikoFixtureUsesLowerThresholdScale() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "King Seiko fixture")
+
+        XCTAssertLessThan(result.chosenThresholdScale, 1.0)
+    }
+
+    func testQuietSyntheticWatchWithWhiteNoiseStillFindsGrid() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5,
+                                                duration: 30,
+                                                amplitudeScale: 0.08)
+        addWhiteNoise(to: &samples, amplitude: 0.00045, seed: 17)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Noisy synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 5, accuracy: 3.0)
+        XCTAssertGreaterThan(result.beatCoverage, 0.85)
+    }
+
+    func testLowFrequencyHandlingRumbleDoesNotMaskTicks() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: -4, duration: 30)
+        addSine(to: &samples, frequency: 28, amplitude: 0.003)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Rumble synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, -4, accuracy: 3.0)
+        XCTAssertGreaterThan(result.beatCoverage, 0.90)
+    }
+
+    func testDuplicateResonancePeaksAreMergedIntoBeatGrid() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 6,
+                                                duration: 30,
+                                                echoDelay: 0.014,
+                                                echoScale: 0.45)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Resonant synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 6, accuracy: 3.0)
+        XCTAssertGreaterThan(result.beatCoverage, 0.90)
+    }
+
+    func testRandomImpulseNoiseDoesNotCreateConfidentWrongGrid() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: 3, duration: 30)
+        addImpulseNoise(to: &samples, count: 40, amplitude: 0.18, seed: 29)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Impulse synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 3, accuracy: 3.0)
+        XCTAssertGreaterThan(result.beatCoverage, 0.80)
+    }
+
     private func makeSyntheticWatchSamples(
         rateSecondsPerDay: Double,
         nominalBPH: Int? = nil,
         duration: Double = 60,
         amplitudeScale: Float = 1,
+        echoDelay: Double? = nil,
+        echoScale: Float = 0,
         skipBeat: (Int) -> Bool = { _ in false }
     ) -> [Float] {
         let sampleCount = Int(duration * sampleRate)
@@ -149,6 +237,12 @@ final class WatchDSPTests: XCTestCase {
                                  at: tickSample,
                                  beatIndex: beatIndex,
                                  amplitudeScale: amplitudeScale)
+                if let echoDelay {
+                    addSyntheticTick(to: &samples,
+                                     at: tickSample + Int((echoDelay * sampleRate).rounded()),
+                                     beatIndex: beatIndex,
+                                     amplitudeScale: amplitudeScale * echoScale)
+                }
             }
             tickTime += period
             beatIndex += 1
@@ -174,6 +268,70 @@ final class WatchDSPTests: XCTestCase {
             guard samples.indices.contains(sampleIndex) else { continue }
             samples[sampleIndex] += shape[offset] * amplitude
         }
+    }
+
+    private func loadFixture(named name: String) throws -> (samples: [Float], sampleRate: Double) {
+        let bundle = Bundle(for: Self.self)
+        let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "wav"))
+        let file = try AVAudioFile(forReading: url)
+        let format = file.processingFormat
+        let frameCount = AVAudioFrameCount(file.length)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        try file.read(into: buffer)
+
+        let channelData = try XCTUnwrap(buffer.floatChannelData)
+        let channels = max(1, Int(format.channelCount))
+        let frames = Int(buffer.frameLength)
+        var samples: [Float] = []
+        samples.reserveCapacity(frames)
+
+        for frame in 0..<frames {
+            var mixed: Float = 0
+            for channel in 0..<channels {
+                mixed += channelData[channel][frame]
+            }
+            samples.append(mixed / Float(channels))
+        }
+
+        return (samples, format.sampleRate)
+    }
+
+    private func addWhiteNoise(to samples: inout [Float], amplitude: Float, seed: UInt64) {
+        var generator = SeededRandom(seed: seed)
+        for index in samples.indices {
+            samples[index] += (generator.nextFloat() * 2 - 1) * amplitude
+        }
+    }
+
+    private func addSine(to samples: inout [Float], frequency: Double, amplitude: Float) {
+        for index in samples.indices {
+            let t = Double(index) / sampleRate
+            samples[index] += Float(sin(2 * Double.pi * frequency * t)) * amplitude
+        }
+    }
+
+    private func addImpulseNoise(to samples: inout [Float], count: Int, amplitude: Float, seed: UInt64) {
+        var generator = SeededRandom(seed: seed)
+        guard !samples.isEmpty else { return }
+
+        for _ in 0..<count {
+            let index = Int(generator.nextFloat() * Float(samples.count - 1))
+            samples[index] += generator.nextFloat() > 0.5 ? amplitude : -amplitude
+        }
+    }
+}
+
+private struct SeededRandom {
+    private var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed
+    }
+
+    mutating func nextFloat() -> Float {
+        state = state &* 6_364_136_223_846_793_005 &+ 1
+        let value = UInt32(truncatingIfNeeded: state >> 32)
+        return Float(value) / Float(UInt32.max)
     }
 }
 
@@ -405,7 +563,7 @@ final class DomainModelTests: XCTestCase {
         let unstable = Self.makeResult(quality: .low, detectedPeakCount: 80)
 
         XCTAssertTrue(missing.interpretation.contains("No tick candidates"))
-        XCTAssertTrue(unstable.interpretation.contains("did not form a stable beat grid"))
+        XCTAssertTrue(unstable.interpretation.contains("beat pattern is unstable"))
     }
 
     private static func makeResult(
@@ -420,8 +578,15 @@ final class DomainModelTests: XCTestCase {
                                quality: quality,
                                detectedPeakCount: detectedPeakCount,
                                validPeakCount: quality == .high ? 480 : 0,
+                               expectedTickCount: 480,
                                beatCoverage: quality == .high ? 1 : 0,
                                outlierRatio: quality == .high ? 0 : 1,
+                               chosenThresholdScale: 1,
+                               rmsLevel: 0.01,
+                               peakLevel: 0.10,
+                               clippingRatio: 0,
+                               estimatedSnrDb: 12,
+                               periodicityScore: quality == .high ? 1 : 0,
                                detectionThreshold: 0.01,
                                envelopeMedian: 0.001,
                                envelopeP95: 0.01,
@@ -459,8 +624,15 @@ final class MeasurementStateTests: XCTestCase {
                                quality: .high,
                                detectedPeakCount: 480,
                                validPeakCount: 480,
+                               expectedTickCount: 480,
                                beatCoverage: 1,
                                outlierRatio: 0,
+                               chosenThresholdScale: 1,
+                               rmsLevel: 0.01,
+                               peakLevel: 0.10,
+                               clippingRatio: 0,
+                               estimatedSnrDb: 12,
+                               periodicityScore: 1,
                                detectionThreshold: 0.01,
                                envelopeMedian: 0.001,
                                envelopeP95: 0.01,
