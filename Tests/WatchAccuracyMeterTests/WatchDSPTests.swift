@@ -53,9 +53,40 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.routeWarning, "No useful input")
     }
 
+    func testShortCaptureReturnsLowQualityFallback() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 20, duration: 5)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Short synthetic capture")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 0)
+        XCTAssertEqual(result.validPeakCount, 0)
+        XCTAssertEqual(result.sampleCount, samples.count)
+    }
+
+    func testBeatGridFitToleratesMissedTicks() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 7) { beatIndex in
+            beatIndex.isMultiple(of: 19)
+        }
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Synthetic missed ticks")
+
+        XCTAssertEqual(result.quality, .high)
+        XCTAssertEqual(result.rateSecondsPerDay, 7, accuracy: 1.5)
+        XCTAssertGreaterThan(result.validPeakCount, 430)
+        XCTAssertLessThan(result.outlierRatio, 0.05)
+    }
+
     private func makeSyntheticWatchSamples(
         rateSecondsPerDay: Double,
-        duration: Double = 60
+        duration: Double = 60,
+        skipBeat: (Int) -> Bool = { _ in false }
     ) -> [Float] {
         let sampleCount = Int(duration * sampleRate)
         var samples = Array(repeating: Float(0), count: sampleCount)
@@ -66,7 +97,9 @@ final class WatchDSPTests: XCTestCase {
         var tickTime = 0.1
         while tickTime < duration - 0.1 {
             let tickSample = Int((tickTime * sampleRate).rounded())
-            addSyntheticTick(to: &samples, at: tickSample, beatIndex: beatIndex)
+            if !skipBeat(beatIndex) {
+                addSyntheticTick(to: &samples, at: tickSample, beatIndex: beatIndex)
+            }
             tickTime += period
             beatIndex += 1
         }

@@ -6,7 +6,6 @@ final class AudioWatchMeter: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
-    private var liveLevelCallback: ((Float) -> Void)?
 
     private(set) var actualSampleRate: Double = 48_000
     private(set) var routeDescription: String = "Unknown"
@@ -39,7 +38,6 @@ final class AudioWatchMeter: @unchecked Sendable {
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
         stop()
-        liveLevelCallback = liveLevel
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
@@ -56,9 +54,10 @@ final class AudioWatchMeter: @unchecked Sendable {
         let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
+        actualSampleRate = format.sampleRate > 0 ? format.sampleRate : session.sampleRate
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.handle(buffer: buffer)
+            self?.handle(buffer: buffer, liveLevel: liveLevel)
         }
         tappedInputNode = input
         self.engine = engine
@@ -72,7 +71,6 @@ final class AudioWatchMeter: @unchecked Sendable {
         tappedInputNode = nil
         engine?.stop()
         engine = nil
-        liveLevelCallback = nil
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
@@ -84,25 +82,29 @@ final class AudioWatchMeter: @unchecked Sendable {
         return copy
     }
 
-    private func handle(buffer: AVAudioPCMBuffer) {
+    private func handle(buffer: AVAudioPCMBuffer, liveLevel: (Float) -> Void) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        let firstChannel = channelData[0]
+        let channelCount = max(1, Int(buffer.format.channelCount))
         var chunk = [Float]()
         chunk.reserveCapacity(frameLength)
 
         var sumSquares: Float = 0
         for i in 0..<frameLength {
-            let value = firstChannel[i]
+            var mixedValue: Float = 0
+            for channel in 0..<channelCount {
+                mixedValue += channelData[channel][i]
+            }
+            let value = mixedValue / Float(channelCount)
             chunk.append(value)
             sumSquares += value * value
         }
 
         let rms = sqrt(sumSquares / Float(frameLength))
         let normalizedLevel = min(1, rms * 50)
-        liveLevelCallback?(normalizedLevel)
+        liveLevel(normalizedLevel)
 
         lock.lock()
         samples.append(contentsOf: chunk)

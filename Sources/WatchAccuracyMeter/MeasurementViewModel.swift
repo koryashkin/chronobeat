@@ -89,6 +89,7 @@ final class MeasurementViewModel: ObservableObject {
 
     private func finishMeasurement() async {
         cancelTimer()
+        guard !Task.isCancelled else { return }
         state = .analyzing
 
         let samples = audioMeter.stopAndReturnSamples()
@@ -105,6 +106,7 @@ final class MeasurementViewModel: ObservableObject {
                              routeWarning: routeWarning)
         }.value
 
+        guard !Task.isCancelled else { return }
         measurementTask = nil
         state = .result(result)
     }
@@ -136,7 +138,9 @@ final class MeasurementViewModel: ObservableObject {
 
         lastObservedSampleCount = sampleCount
         capturedSampleCount = sampleCount
-        capturedAudioSeconds = audioMeter.actualSampleRate > 0 ? Double(sampleCount) / audioMeter.actualSampleRate : 0
+        capturedAudioSeconds = audioMeter.actualSampleRate > 0
+            ? Double(sampleCount) / audioMeter.actualSampleRate
+            : 0
         isReceivingAudio = sampleCount > 0 && now.timeIntervalSince(lastSampleGrowthDate) < 0.75
     }
 
