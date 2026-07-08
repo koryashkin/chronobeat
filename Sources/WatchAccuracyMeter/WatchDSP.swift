@@ -145,7 +145,8 @@ enum WatchDSP {
         }
 
         let processed = preprocess(samples, sampleRate: sampleRate)
-        let envelope = makeEnvelope(processed, sampleRate: sampleRate)
+        let envelope = normalizeEnvelope(makeEnvelope(processed, sampleRate: sampleRate),
+                                          sampleRate: sampleRate)
         let selectedDetection = bestDetection(envelope: envelope,
                                               sampleRate: sampleRate,
                                               selectedBPH: selectedBPH,
@@ -172,15 +173,19 @@ enum WatchDSP {
         let detectedBPH = 3600.0 / fit.period
         let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
         let qualityScore = qualityScore(validPeaks: fit.validCount,
+                                        candidatePeakCount: detection.stats.candidatePeakCount,
                                         expectedTickCount: expectedTickCount,
                                         beatCoverage: fit.beatCoverage,
                                         outlierRatio: fit.outlierRatio,
                                         windowRates: fit.windowRates,
                                         periodicityScore: selectedDetection.periodicityScore)
         let quality: SignalQuality
+        let hasConfidentCoverage = hasConfidentCoverage(beatCoverage: fit.beatCoverage,
+                                                        candidatePeakCount: detection.stats.candidatePeakCount,
+                                                        expectedTickCount: expectedTickCount)
         if qualityScore >= 80, fit.beatCoverage >= 0.80, selectedDetection.periodicityScore >= 0.70 {
             quality = .high
-        } else if qualityScore >= 50, fit.beatCoverage >= 0.80, selectedDetection.periodicityScore >= 0.50 {
+        } else if qualityScore >= 50, hasConfidentCoverage, selectedDetection.periodicityScore >= 0.50 {
             quality = .medium
         } else {
             quality = .low
@@ -321,6 +326,21 @@ enum WatchDSP {
         }
         absSignal.removeAll()
         return envelope
+    }
+
+    private static func normalizeEnvelope(_ envelope: [Float], sampleRate: Double) -> [Float] {
+        guard !envelope.isEmpty else { return [] }
+
+        let shortNoise = movingAverage(envelope, window: max(16, Int(sampleRate * 0.08)))
+        let longNoise = movingAverage(envelope, window: max(16, Int(sampleRate * 0.75)))
+        var normalized = Array(repeating: Float(0), count: envelope.count)
+
+        for index in envelope.indices {
+            let floor = max(shortNoise[index] * 0.65 + longNoise[index] * 0.35, 0.000_000_001)
+            normalized[index] = envelope[index] / floor
+        }
+
+        return normalized
     }
 
     private struct PeakDetectionResult {
@@ -524,6 +544,19 @@ enum WatchDSP {
         return max(0, min(1, score))
     }
 
+    private static func candidateCountMatch(candidatePeakCount: Int, expectedTickCount: Int) -> Double {
+        let expected = max(expectedTickCount, 1)
+        return max(0, 1 - abs(Double(candidatePeakCount - expected)) / Double(expected))
+    }
+
+    private static func hasConfidentCoverage(beatCoverage: Double, candidatePeakCount: Int, expectedTickCount: Int) -> Bool {
+        if beatCoverage >= 0.80 {
+            return true
+        }
+        return beatCoverage >= 0.75
+            && candidateCountMatch(candidatePeakCount: candidatePeakCount, expectedTickCount: expectedTickCount) >= 0.80
+    }
+
     private struct FitResult {
         let period: Double
         let validCount: Int
@@ -637,6 +670,7 @@ enum WatchDSP {
 
     private static func qualityScore(
         validPeaks: Int,
+        candidatePeakCount: Int,
         expectedTickCount: Int,
         beatCoverage: Double,
         outlierRatio: Double,
@@ -662,10 +696,12 @@ enum WatchDSP {
             + outlierScore * 0.20
             + stabilityScore * 0.20
             + periodicityComponent * 0.35
-        let periodicityPenalty = max(0, min(1, (periodicityScore - 0.45) / 0.35))
+        let periodicityPenalty = max(0, min(1, (periodicityScore - 0.40) / 0.30))
         let coveragePenalty = beatCoverage >= 0.70 ? 1 : max(0, beatCoverage / 0.70)
         let score = max(0, min(100, baseScore * periodicityPenalty * coveragePenalty))
-        if beatCoverage < 0.80 {
+        if !hasConfidentCoverage(beatCoverage: beatCoverage,
+                                 candidatePeakCount: candidatePeakCount,
+                                 expectedTickCount: expectedTickCount) {
             return min(score, 49)
         }
         return score

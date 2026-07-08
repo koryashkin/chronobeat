@@ -95,7 +95,7 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.quality, .high)
         XCTAssertEqual(result.rateSecondsPerDay, 9, accuracy: 1.5)
         XCTAssertGreaterThan(result.detectedPeakCount, 400)
-        XCTAssertLessThan(result.detectionThreshold, 0.0005)
+        XCTAssertLessThan(result.rmsLevel, 0.001)
     }
 
     func testDetectsSupportedLowerBeatRateSyntheticWatch() {
@@ -213,6 +213,44 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThan(result.beatCoverage, 0.80)
     }
 
+    func testAdaptiveLevelShiftStillFindsQuietTickGrid() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: -8,
+                                                duration: 30,
+                                                amplitudeScale: 0.09)
+        applyLevelRamp(to: &samples, startGain: 0.30, endGain: 1.80)
+        addWhiteNoise(to: &samples, amplitude: 0.00035, seed: 41)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Level-shifted synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, -8, accuracy: 3.5)
+        XCTAssertGreaterThan(result.beatCoverage, 0.75)
+    }
+
+    func testLocalizedNoiseBurstDoesNotBreakWholeMeasurement() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
+                                                duration: 30,
+                                                amplitudeScale: 0.12)
+        addWhiteNoise(to: &samples, amplitude: 0.00030, seed: 53)
+        addNoiseBurst(to: &samples,
+                      start: 11,
+                      duration: 4,
+                      amplitude: 0.004,
+                      seed: 67)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Burst-noise synthetic watch")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 4.0)
+        XCTAssertGreaterThan(result.beatCoverage, 0.75)
+    }
+
     private func makeSyntheticWatchSamples(
         rateSecondsPerDay: Double,
         nominalBPH: Int? = nil,
@@ -317,6 +355,33 @@ final class WatchDSPTests: XCTestCase {
         for _ in 0..<count {
             let index = Int(generator.nextFloat() * Float(samples.count - 1))
             samples[index] += generator.nextFloat() > 0.5 ? amplitude : -amplitude
+        }
+    }
+
+    private func applyLevelRamp(to samples: inout [Float], startGain: Float, endGain: Float) {
+        guard samples.count > 1 else { return }
+
+        for index in samples.indices {
+            let progress = Float(index) / Float(samples.count - 1)
+            let gain = startGain + (endGain - startGain) * progress
+            samples[index] *= gain
+        }
+    }
+
+    private func addNoiseBurst(to samples: inout [Float],
+                               start: Double,
+                               duration: Double,
+                               amplitude: Float,
+                               seed: UInt64) {
+        var generator = SeededRandom(seed: seed)
+        let startIndex = max(0, Int(start * sampleRate))
+        let endIndex = min(samples.count, startIndex + Int(duration * sampleRate))
+        guard startIndex < endIndex else { return }
+
+        for index in startIndex..<endIndex {
+            let slowWave = Float(sin(2 * Double.pi * 38 * Double(index) / sampleRate)) * amplitude
+            let hiss = (generator.nextFloat() * 2 - 1) * amplitude * 0.35
+            samples[index] += slowWave + hiss
         }
     }
 }
