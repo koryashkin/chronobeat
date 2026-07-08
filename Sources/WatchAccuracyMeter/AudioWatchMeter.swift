@@ -1,7 +1,19 @@
 import Foundation
 import AVFoundation
 
-final class AudioWatchMeter: @unchecked Sendable {
+protocol WatchAudioMetering: AnyObject, Sendable {
+    var actualSampleRate: Double { get }
+    var routeDescription: String { get }
+    var routeWarning: String? { get }
+    var capturedSampleCount: Int { get }
+
+    func requestPermissionIfNeeded() async throws
+    func start(liveLevel: @escaping (Float) -> Void) throws
+    func stop()
+    func stopAndReturnSamples() -> [Float]
+}
+
+final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
     private let lock = NSLock()
     private var engine: AVAudioEngine?
     private var tappedInputNode: AVAudioInputNode?

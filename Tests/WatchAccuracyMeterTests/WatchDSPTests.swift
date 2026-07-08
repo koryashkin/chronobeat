@@ -177,6 +177,203 @@ final class WatchDSPTests: XCTestCase {
     }
 }
 
+@MainActor
+final class MeasurementViewModelAudioTests: XCTestCase {
+    private let sampleRate = 48_000.0
+    private let selectedBPH = 28_800
+
+    func testMeasurementCompletesWithInjectedAudioSamples() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 11)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeDescription: "Synthetic microphone")
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .result = viewModel.state { return true }
+            return false
+        }
+
+        guard case .result(let result) = viewModel.state else {
+            return XCTFail("Expected a result state.")
+        }
+
+        XCTAssertTrue(audioMeter.didRequestPermission)
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+        XCTAssertEqual(result.quality, .high)
+        XCTAssertEqual(result.rateSecondsPerDay, 11, accuracy: 1.5)
+        XCTAssertEqual(result.routeDescription, "Synthetic microphone")
+        XCTAssertEqual(result.sampleCount, samples.count)
+    }
+
+    func testInjectedAudioUpdatesCaptureStatusWithoutRealMicrophone() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 5)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil { viewModel.isReceivingAudio }
+
+        XCTAssertEqual(viewModel.capturedSampleCount, samples.count)
+        XCTAssertEqual(viewModel.capturedAudioSeconds, 60, accuracy: 0.1)
+        XCTAssertEqual(viewModel.liveLevelText, "42%")
+
+        viewModel.cancelMeasurement()
+    }
+
+    func testPermissionFailureDoesNotStartInjectedAudioMeter() async throws {
+        let audioMeter = FakeAudioMeter(samples: [],
+                                        sampleRate: sampleRate,
+                                        permissionError: AudioMeterError.microphonePermissionDenied)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("Microphone access is required"))
+        XCTAssertTrue(audioMeter.didRequestPermission)
+        XCTAssertEqual(audioMeter.startCallCount, 0)
+    }
+
+    func testInactiveSceneStopsInjectedAudioMeasurement() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 5)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil { viewModel.isMeasuring }
+        viewModel.stopForInactiveScene()
+
+        XCTAssertTrue(viewModel.canEditBeatRate)
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertGreaterThanOrEqual(audioMeter.stopCallCount, 1)
+    }
+
+    private func makeSyntheticWatchSamples(
+        rateSecondsPerDay: Double,
+        duration: Double = 60
+    ) -> [Float] {
+        let sampleCount = Int(duration * sampleRate)
+        var samples = Array(repeating: Float(0), count: sampleCount)
+        let detectedBPH = Double(selectedBPH) * (1 + rateSecondsPerDay / 86_400)
+        let period = 3_600 / detectedBPH
+
+        var beatIndex = 0
+        var tickTime = 0.1
+        while tickTime < duration - 0.1 {
+            let tickSample = Int((tickTime * sampleRate).rounded())
+            addSyntheticTick(to: &samples, at: tickSample, beatIndex: beatIndex)
+            tickTime += period
+            beatIndex += 1
+        }
+
+        return samples
+    }
+
+    private func addSyntheticTick(to samples: inout [Float], at index: Int, beatIndex: Int) {
+        let shape: [Float] = [
+            0.90, 0.68, 0.44, 0.20, -0.22, -0.14, -0.07,
+            0.10, 0.06, 0.03, 0.015, 0.008
+        ]
+        let amplitude = Float(0.55 + 0.05 * sin(Double(beatIndex) * 0.17))
+
+        for offset in shape.indices {
+            let sampleIndex = index + offset
+            guard samples.indices.contains(sampleIndex) else { continue }
+            samples[sampleIndex] += shape[offset] * amplitude
+        }
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 3,
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() >= deadline {
+                throw TestWaitError.timeout
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }
+
+    private enum TestWaitError: Error {
+        case timeout
+    }
+}
+
+private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
+    var actualSampleRate: Double
+    var routeDescription: String
+    var routeWarning: String?
+
+    private let samples: [Float]
+    private let permissionError: Error?
+    private var hasStarted = false
+
+    private(set) var didRequestPermission = false
+    private(set) var startCallCount = 0
+    private(set) var stopCallCount = 0
+    private(set) var stopAndReturnSamplesCallCount = 0
+
+    var capturedSampleCount: Int {
+        hasStarted ? samples.count : 0
+    }
+
+    init(samples: [Float],
+         sampleRate: Double,
+         routeDescription: String = "Synthetic audio input",
+         routeWarning: String? = nil,
+         permissionError: Error? = nil) {
+        self.samples = samples
+        self.actualSampleRate = sampleRate
+        self.routeDescription = routeDescription
+        self.routeWarning = routeWarning
+        self.permissionError = permissionError
+    }
+
+    func requestPermissionIfNeeded() async throws {
+        didRequestPermission = true
+        if let permissionError {
+            throw permissionError
+        }
+    }
+
+    func start(liveLevel: @escaping (Float) -> Void) throws {
+        startCallCount += 1
+        hasStarted = true
+        liveLevel(0.42)
+    }
+
+    func stop() {
+        stopCallCount += 1
+        hasStarted = false
+    }
+
+    func stopAndReturnSamples() -> [Float] {
+        stopAndReturnSamplesCallCount += 1
+        stop()
+        return samples
+    }
+}
+
 final class DomainModelTests: XCTestCase {
     func testBeatRateCasesExposeExpectedLabelsAndIds() {
         XCTAssertEqual(BeatRate.allCases.map(\.rawValue),
