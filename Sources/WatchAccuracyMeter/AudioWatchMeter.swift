@@ -2,8 +2,9 @@ import Foundation
 import AVFoundation
 
 final class AudioWatchMeter: @unchecked Sendable {
-    private let engine = AVAudioEngine()
     private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
     private var liveLevelCallback: ((Float) -> Void)?
 
@@ -37,6 +38,7 @@ final class AudioWatchMeter: @unchecked Sendable {
     }
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
+        stop()
         liveLevelCallback = liveLevel
         lock.lock()
         samples.removeAll(keepingCapacity: true)
@@ -51,21 +53,26 @@ final class AudioWatchMeter: @unchecked Sendable {
         actualSampleRate = session.sampleRate
         updateRouteInfo(from: session)
 
+        let engine = AVAudioEngine()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
 
-        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.handle(buffer: buffer)
         }
+        tappedInputNode = input
+        self.engine = engine
 
         engine.prepare()
         try engine.start()
     }
 
     func stop() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        tappedInputNode?.removeTap(onBus: 0)
+        tappedInputNode = nil
+        engine?.stop()
+        engine = nil
+        liveLevelCallback = nil
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
