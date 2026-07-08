@@ -1,0 +1,10 @@
+name: Placeholder
+
+on:
+  workflow_dispatch:
+
+jobs:
+  info:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Add Xcode build CI after .xcodeproj is committed."

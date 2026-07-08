@@ -1,0 +1,23 @@
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Swift Package / build
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Audio/debug captures
+*.wav
+*.caf
+*.m4a
+*.pcm
+DebugCaptures/
+
+# Secrets
+.env
