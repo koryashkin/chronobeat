@@ -11,6 +11,13 @@ final class AudioWatchMeter: @unchecked Sendable {
     private(set) var routeDescription: String = "Unknown"
     private(set) var routeWarning: String?
 
+    var capturedSampleCount: Int {
+        lock.lock()
+        let count = samples.count
+        lock.unlock()
+        return count
+    }
+
     func requestPermissionIfNeeded() async throws {
         let granted = await withCheckedContinuation { continuation in
             if #available(iOS 17.0, *) {
@@ -31,7 +38,9 @@ final class AudioWatchMeter: @unchecked Sendable {
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
         liveLevelCallback = liveLevel
+        lock.lock()
         samples.removeAll(keepingCapacity: true)
+        lock.unlock()
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [])

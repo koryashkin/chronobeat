@@ -9,6 +9,9 @@ final class MeasurementViewModel: ObservableObject {
     @Published var progress: Double = 0
     @Published var liveLevelText: String = "0%"
     @Published var routeWarning: String?
+    @Published var capturedSampleCount: Int = 0
+    @Published var capturedAudioSeconds: Double = 0
+    @Published var isReceivingAudio: Bool = false
 
     var isMeasuring: Bool {
         if case .measuring = state { return true }
@@ -19,6 +22,8 @@ final class MeasurementViewModel: ObservableObject {
     private let measurementDuration: TimeInterval = 60
     private var timerTask: Task<Void, Never>?
     private var measurementTask: Task<Void, Never>?
+    private var lastObservedSampleCount = 0
+    private var lastSampleGrowthDate = Date.distantPast
 
     func startMeasurement() {
         measurementTask?.cancel()
@@ -38,6 +43,7 @@ final class MeasurementViewModel: ObservableObject {
             state = .measuring
             elapsedSeconds = 0
             progress = 0
+            resetCaptureStatus()
 
             try audioMeter.start { [weak self] level in
                 Task { @MainActor in
@@ -78,6 +84,7 @@ final class MeasurementViewModel: ObservableObject {
         progress = 0
         liveLevelText = "0%"
         routeWarning = nil
+        resetCaptureStatus()
     }
 
     private func finishMeasurement() async {
@@ -112,10 +119,33 @@ final class MeasurementViewModel: ObservableObject {
                 await MainActor.run {
                     self.elapsedSeconds = min(self.measurementDuration, elapsed)
                     self.progress = min(1, elapsed / self.measurementDuration)
+                    self.updateCaptureStatus()
                 }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
+    }
+
+    private func updateCaptureStatus() {
+        let sampleCount = audioMeter.capturedSampleCount
+        let now = Date()
+
+        if sampleCount > lastObservedSampleCount {
+            lastSampleGrowthDate = now
+        }
+
+        lastObservedSampleCount = sampleCount
+        capturedSampleCount = sampleCount
+        capturedAudioSeconds = audioMeter.actualSampleRate > 0 ? Double(sampleCount) / audioMeter.actualSampleRate : 0
+        isReceivingAudio = sampleCount > 0 && now.timeIntervalSince(lastSampleGrowthDate) < 0.75
+    }
+
+    private func resetCaptureStatus() {
+        capturedSampleCount = 0
+        capturedAudioSeconds = 0
+        isReceivingAudio = false
+        lastObservedSampleCount = 0
+        lastSampleGrowthDate = .distantPast
     }
 
     private func cancelTimer() {

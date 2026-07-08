@@ -65,6 +65,9 @@ struct ContentView: View {
                     .font(.title3.monospacedDigit())
                 Text("Live level: \(viewModel.liveLevelText)")
                     .foregroundStyle(.secondary)
+                CaptureStatusView(isReceivingAudio: viewModel.isReceivingAudio,
+                                  capturedAudioSeconds: viewModel.capturedAudioSeconds,
+                                  capturedSampleCount: viewModel.capturedSampleCount)
                 if let routeWarning = viewModel.routeWarning {
                     Text(routeWarning)
                         .font(.footnote)
@@ -101,6 +104,35 @@ struct ContentView: View {
                 .accessibilityIdentifier("tryAgainButton")
             }
         }
+    }
+}
+
+struct CaptureStatusView: View {
+    let isReceivingAudio: Bool
+    let capturedAudioSeconds: Double
+    let capturedSampleCount: Int
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: isReceivingAudio ? "waveform.circle.fill" : "waveform.circle")
+                .font(.title2)
+                .foregroundStyle(isReceivingAudio ? .green : .secondary)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(isReceivingAudio ? "Audio samples received" : "Waiting for audio samples")
+                    .font(.subheadline.weight(.semibold))
+                Text("\(String(format: "%.1f", capturedAudioSeconds)) sec · \(capturedSampleCount.formatted()) samples")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("audioCaptureStatus")
     }
 }
 
