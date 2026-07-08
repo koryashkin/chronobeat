@@ -127,7 +127,7 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					699734845933B7D74D3B1C94 = {
-						DevelopmentTeam = QL3EZT5C88;
+						DevelopmentTeam = THT3D327QD;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -209,7 +209,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = QL3EZT5C88;
+				DEVELOPMENT_TEAM = THT3D327QD;
 				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -367,7 +367,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = QL3EZT5C88;
+				DEVELOPMENT_TEAM = THT3D327QD;
 				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (

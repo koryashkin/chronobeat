@@ -21,6 +21,27 @@ enum MeasurementState {
     case failed(String)
 }
 
+extension MeasurementState {
+    var canEditBeatRate: Bool {
+        if case .idle = self { return true }
+        return false
+    }
+
+    var isMeasuring: Bool {
+        if case .measuring = self { return true }
+        return false
+    }
+
+    var requiresForegroundAudioSession: Bool {
+        switch self {
+        case .requestingPermission, .measuring:
+            return true
+        case .idle, .analyzing, .result, .failed:
+            return false
+        }
+    }
+}
+
 enum SignalQuality: String, Equatable {
     case high
     case medium

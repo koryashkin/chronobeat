@@ -6,10 +6,13 @@ final class AudioWatchMeter: @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
+    private var lastLiveLevelDeliveryTime: TimeInterval = 0
 
     private(set) var actualSampleRate: Double = 48_000
     private(set) var routeDescription: String = "Unknown"
     private(set) var routeWarning: String?
+
+    private let liveLevelMinimumInterval: TimeInterval = 0.1
 
     var capturedSampleCount: Int {
         lock.lock()
@@ -38,9 +41,8 @@ final class AudioWatchMeter: @unchecked Sendable {
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
         stop()
-        lock.lock()
-        samples.removeAll(keepingCapacity: true)
-        lock.unlock()
+        resetSamples(reservingCapacity: nil)
+        lastLiveLevelDeliveryTime = 0
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [])
@@ -55,6 +57,7 @@ final class AudioWatchMeter: @unchecked Sendable {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         actualSampleRate = format.sampleRate > 0 ? format.sampleRate : session.sampleRate
+        resetSamples(reservingCapacity: Int(max(actualSampleRate, 48_000) * 65))
 
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             self?.handle(buffer: buffer, liveLevel: liveLevel)
@@ -88,26 +91,39 @@ final class AudioWatchMeter: @unchecked Sendable {
         guard frameLength > 0 else { return }
 
         let channelCount = max(1, Int(buffer.format.channelCount))
-        var chunk = [Float]()
-        chunk.reserveCapacity(frameLength)
-
         var sumSquares: Float = 0
+
+        lock.lock()
         for i in 0..<frameLength {
             var mixedValue: Float = 0
             for channel in 0..<channelCount {
                 mixedValue += channelData[channel][i]
             }
             let value = mixedValue / Float(channelCount)
-            chunk.append(value)
+            samples.append(value)
             sumSquares += value * value
         }
 
+        let now = ProcessInfo.processInfo.systemUptime
+        let shouldDeliverLiveLevel = now - lastLiveLevelDeliveryTime >= liveLevelMinimumInterval
+        if shouldDeliverLiveLevel {
+            lastLiveLevelDeliveryTime = now
+        }
+        lock.unlock()
+
         let rms = sqrt(sumSquares / Float(frameLength))
         let normalizedLevel = min(1, rms * 50)
-        liveLevel(normalizedLevel)
+        if shouldDeliverLiveLevel {
+            liveLevel(normalizedLevel)
+        }
+    }
 
+    private func resetSamples(reservingCapacity capacity: Int?) {
         lock.lock()
-        samples.append(contentsOf: chunk)
+        samples.removeAll(keepingCapacity: true)
+        if let capacity {
+            samples.reserveCapacity(capacity)
+        }
         lock.unlock()
     }
 

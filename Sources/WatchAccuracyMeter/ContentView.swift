@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var viewModel = MeasurementViewModel()
 
     var body: some View {
@@ -15,7 +16,7 @@ struct ContentView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .disabled(viewModel.isMeasuring)
+                    .disabled(!viewModel.canEditBeatRate)
                     .accessibilityIdentifier("beatRatePicker")
 
                     content
@@ -28,6 +29,10 @@ struct ContentView: View {
             .navigationTitle("Watch Accuracy")
             .onDisappear {
                 viewModel.cancelMeasurement()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase != .active else { return }
+                viewModel.stopForInactiveScene()
             }
         }
     }

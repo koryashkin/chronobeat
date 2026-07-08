@@ -14,8 +14,11 @@ final class MeasurementViewModel: ObservableObject {
     @Published var isReceivingAudio: Bool = false
 
     var isMeasuring: Bool {
-        if case .measuring = state { return true }
-        return false
+        state.isMeasuring
+    }
+
+    var canEditBeatRate: Bool {
+        state.canEditBeatRate
     }
 
     private let audioMeter = AudioWatchMeter()
@@ -26,13 +29,16 @@ final class MeasurementViewModel: ObservableObject {
     private var lastSampleGrowthDate = Date.distantPast
 
     func startMeasurement() {
+        guard state.canEditBeatRate else { return }
+        let selectedBPHForRun = selectedBPH
+
         measurementTask?.cancel()
         measurementTask = Task { [weak self] in
-            await self?.runMeasurement()
+            await self?.runMeasurement(selectedBPH: selectedBPHForRun)
         }
     }
 
-    private func runMeasurement() async {
+    private func runMeasurement(selectedBPH: BeatRate) async {
         state = .requestingPermission
         routeWarning = nil
 
@@ -57,7 +63,7 @@ final class MeasurementViewModel: ObservableObject {
 
             try await Task.sleep(nanoseconds: UInt64(measurementDuration * 1_000_000_000))
             try Task.checkCancellation()
-            await finishMeasurement()
+            await finishMeasurement(selectedBPH: selectedBPH)
         } catch is CancellationError {
             cancelTimer()
             audioMeter.stop()
@@ -87,7 +93,12 @@ final class MeasurementViewModel: ObservableObject {
         resetCaptureStatus()
     }
 
-    private func finishMeasurement() async {
+    func stopForInactiveScene() {
+        guard state.requiresForegroundAudioSession else { return }
+        cancelMeasurement()
+    }
+
+    private func finishMeasurement(selectedBPH: BeatRate) async {
         cancelTimer()
         guard !Task.isCancelled else { return }
         state = .analyzing

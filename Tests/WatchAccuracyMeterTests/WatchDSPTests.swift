@@ -144,3 +144,41 @@ final class WatchDSPTests: XCTestCase {
         }
     }
 }
+
+final class MeasurementStateTests: XCTestCase {
+    func testBeatRateSelectionIsEditableOnlyWhenIdle() {
+        XCTAssertTrue(MeasurementState.idle.canEditBeatRate)
+        XCTAssertFalse(MeasurementState.requestingPermission.canEditBeatRate)
+        XCTAssertFalse(MeasurementState.measuring.canEditBeatRate)
+        XCTAssertFalse(MeasurementState.analyzing.canEditBeatRate)
+        XCTAssertFalse(MeasurementState.result(Self.makeResult()).canEditBeatRate)
+        XCTAssertFalse(MeasurementState.failed("No microphone").canEditBeatRate)
+    }
+
+    func testForegroundAudioSessionIsRequiredOnlyAroundCaptureStartupAndRecording() {
+        XCTAssertFalse(MeasurementState.idle.requiresForegroundAudioSession)
+        XCTAssertTrue(MeasurementState.requestingPermission.requiresForegroundAudioSession)
+        XCTAssertTrue(MeasurementState.measuring.requiresForegroundAudioSession)
+        XCTAssertFalse(MeasurementState.analyzing.requiresForegroundAudioSession)
+        XCTAssertFalse(MeasurementState.result(Self.makeResult()).requiresForegroundAudioSession)
+        XCTAssertFalse(MeasurementState.failed("No microphone").requiresForegroundAudioSession)
+    }
+
+    private static func makeResult() -> WatchMeasurementResult {
+        WatchMeasurementResult(selectedBPH: 28_800,
+                               detectedBPH: 28_800,
+                               rateSecondsPerDay: 0,
+                               qualityScore: 100,
+                               quality: .high,
+                               detectedPeakCount: 480,
+                               validPeakCount: 480,
+                               outlierRatio: 0,
+                               detectionThreshold: 0.01,
+                               envelopeMedian: 0.001,
+                               envelopeP95: 0.01,
+                               sampleRate: 48_000,
+                               sampleCount: 2_880_000,
+                               routeDescription: "Synthetic",
+                               routeWarning: nil)
+    }
+}
