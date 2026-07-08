@@ -83,9 +83,24 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.outlierRatio, 0.05)
     }
 
+    func testDetectsVeryQuietSyntheticWatchBelowOldFixedThreshold() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 9, amplitudeScale: 0.02)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Very quiet synthetic watch")
+
+        XCTAssertEqual(result.quality, .high)
+        XCTAssertEqual(result.rateSecondsPerDay, 9, accuracy: 1.5)
+        XCTAssertGreaterThan(result.detectedPeakCount, 400)
+        XCTAssertLessThan(result.detectionThreshold, 0.0005)
+    }
+
     private func makeSyntheticWatchSamples(
         rateSecondsPerDay: Double,
         duration: Double = 60,
+        amplitudeScale: Float = 1,
         skipBeat: (Int) -> Bool = { _ in false }
     ) -> [Float] {
         let sampleCount = Int(duration * sampleRate)
@@ -98,7 +113,10 @@ final class WatchDSPTests: XCTestCase {
         while tickTime < duration - 0.1 {
             let tickSample = Int((tickTime * sampleRate).rounded())
             if !skipBeat(beatIndex) {
-                addSyntheticTick(to: &samples, at: tickSample, beatIndex: beatIndex)
+                addSyntheticTick(to: &samples,
+                                 at: tickSample,
+                                 beatIndex: beatIndex,
+                                 amplitudeScale: amplitudeScale)
             }
             tickTime += period
             beatIndex += 1
@@ -107,12 +125,17 @@ final class WatchDSPTests: XCTestCase {
         return samples
     }
 
-    private func addSyntheticTick(to samples: inout [Float], at index: Int, beatIndex: Int) {
+    private func addSyntheticTick(
+        to samples: inout [Float],
+        at index: Int,
+        beatIndex: Int,
+        amplitudeScale: Float
+    ) {
         let shape: [Float] = [
             0.90, 0.68, 0.44, 0.20, -0.22, -0.14, -0.07,
             0.10, 0.06, 0.03, 0.015, 0.008
         ]
-        let amplitude = Float(0.55 + 0.05 * sin(Double(beatIndex) * 0.17))
+        let amplitude = Float(0.55 + 0.05 * sin(Double(beatIndex) * 0.17)) * amplitudeScale
 
         for offset in shape.indices {
             let sampleIndex = index + offset

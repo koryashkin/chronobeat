@@ -155,8 +155,12 @@ struct ResultView: View {
                     Text("Measured beat rate: \(String(format: "%.1f", result.detectedBPH)) bph")
                 }
                 Text("Quality score: \(String(format: "%.0f", result.qualityScore)) / 100")
+                Text("Candidate ticks: \(result.detectedPeakCount)")
                 Text("Valid beats: \(result.validPeakCount)")
                 Text("Outlier ratio: \(String(format: "%.1f", result.outlierRatio * 100))%")
+                Text("Detection threshold: \(String(format: "%.6f", result.detectionThreshold))")
+                Text("Envelope median: \(String(format: "%.6f", result.envelopeMedian))")
+                Text("Envelope p95: \(String(format: "%.6f", result.envelopeP95))")
                 Text("Sample rate: \(String(format: "%.0f", result.sampleRate)) Hz")
                 Text("Captured samples: \(result.sampleCount)")
                 Text("Input route: \(result.routeDescription)")
