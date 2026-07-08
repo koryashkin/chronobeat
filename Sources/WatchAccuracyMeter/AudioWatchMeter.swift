@@ -1,18 +1,26 @@
 import Foundation
 import AVFoundation
 
-final class AudioWatchMeter {
+final class AudioWatchMeter: @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var samples: [Float] = []
     private var liveLevelCallback: ((Float) -> Void)?
 
     private(set) var actualSampleRate: Double = 48_000
+    private(set) var routeDescription: String = "Unknown"
+    private(set) var routeWarning: String?
 
     func requestPermissionIfNeeded() async throws {
         let granted = await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { allowed in
-                continuation.resume(returning: allowed)
+            if #available(iOS 17.0, *) {
+                AVAudioApplication.requestRecordPermission { allowed in
+                    continuation.resume(returning: allowed)
+                }
+            } else {
+                AVAudioSession.sharedInstance().requestRecordPermission { allowed in
+                    continuation.resume(returning: allowed)
+                }
             }
         }
 
@@ -32,6 +40,7 @@ final class AudioWatchMeter {
         try session.setActive(true)
 
         actualSampleRate = session.sampleRate
+        updateRouteInfo(from: session)
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -82,6 +91,23 @@ final class AudioWatchMeter {
         lock.lock()
         samples.append(contentsOf: chunk)
         lock.unlock()
+    }
+
+    private func updateRouteInfo(from session: AVAudioSession) {
+        let inputs = session.currentRoute.inputs
+        guard let primaryInput = inputs.first else {
+            routeDescription = "No input route"
+            routeWarning = "No microphone input route was detected."
+            return
+        }
+
+        routeDescription = "\(primaryInput.portName) (\(primaryInput.portType.rawValue))"
+
+        if primaryInput.portType == .builtInMic {
+            routeWarning = nil
+        } else {
+            routeWarning = "Current input is \(primaryInput.portName). Use the built-in iPhone microphone for best results."
+        }
     }
 }
 

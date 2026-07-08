@@ -49,27 +49,41 @@ Sources/WatchAccuracyMeter/
   MeasurementViewModel.swift
   AudioWatchMeter.swift
   WatchDSP.swift
+  Info.plist
 Docs/
   MVP_Technical_Document.md
 Scripts/
   create_github_repo.sh
   setup_xcode_project.md
+project.yml
+WatchAccuracyMeter.xcodeproj/
 ```
 
 ## How to run in Xcode
 
-1. Open Xcode.
-2. Create a new iOS App project named `WatchAccuracyMeter`.
-3. Use SwiftUI and Swift.
-4. Copy files from `Sources/WatchAccuracyMeter/` into the Xcode project.
-5. Add this to `Info.plist`:
+1. Regenerate the Xcode project after changing `project.yml`:
 
-```xml
-<key>NSMicrophoneUsageDescription</key>
-<string>This app uses the microphone to listen to your watch ticking. Audio is processed on your device and is not uploaded.</string>
+```sh
+xcodegen generate
 ```
 
-6. Run on a real iPhone. Do not validate on Simulator.
+2. Open `WatchAccuracyMeter.xcodeproj`.
+3. Select the `WatchAccuracyMeter` scheme.
+4. Run on an iOS Simulator for UI/build checks.
+5. Run on a real iPhone for microphone and watch-tick validation. Do not validate audio accuracy on Simulator.
+
+The microphone permission string is generated into `Sources/WatchAccuracyMeter/Info.plist` from `project.yml`.
+
+## How to test
+
+Run the unit tests from Xcode with the `WatchAccuracyMeter` scheme, or from the command line:
+
+```sh
+xcodebuild test \
+  -project WatchAccuracyMeter.xcodeproj \
+  -scheme WatchAccuracyMeter \
+  -destination 'platform=iOS Simulator,name=iPhone 17'
+```
 
 ## First validation target
 

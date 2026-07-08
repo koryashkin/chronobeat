@@ -21,7 +21,7 @@ enum MeasurementState {
     case failed(String)
 }
 
-enum SignalQuality: String {
+enum SignalQuality: String, Equatable {
     case high
     case medium
     case low
@@ -43,6 +43,10 @@ struct WatchMeasurementResult {
     let quality: SignalQuality
     let validPeakCount: Int
     let outlierRatio: Double
+    let sampleRate: Double
+    let sampleCount: Int
+    let routeDescription: String
+    let routeWarning: String?
 
     var rateText: String {
         let rounded = Int(rateSecondsPerDay.rounded())
@@ -67,9 +71,20 @@ struct WatchMeasurementResult {
 }
 
 enum WatchDSP {
-    static func analyze(samples: [Float], sampleRate: Double, selectedBPH: Int) -> WatchMeasurementResult {
+    static func analyze(
+        samples: [Float],
+        sampleRate: Double,
+        selectedBPH: Int,
+        routeDescription: String = "Unknown",
+        routeWarning: String? = nil
+    ) -> WatchMeasurementResult {
         guard samples.count > Int(sampleRate * 10) else {
-            return fallback(selectedBPH: selectedBPH, reasonScore: 0)
+            return fallback(selectedBPH: selectedBPH,
+                            reasonScore: 0,
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning)
         }
 
         let processed = preprocess(samples)
@@ -79,7 +94,12 @@ enum WatchDSP {
         let fit = robustFit(peaks: peaks, selectedBPH: selectedBPH)
 
         guard let fit else {
-            return fallback(selectedBPH: selectedBPH, reasonScore: 10)
+            return fallback(selectedBPH: selectedBPH,
+                            reasonScore: 10,
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning)
         }
 
         let detectedBPH = 3600.0 / fit.period
@@ -102,17 +122,32 @@ enum WatchDSP {
                                       qualityScore: qualityScore,
                                       quality: quality,
                                       validPeakCount: fit.validCount,
-                                      outlierRatio: fit.outlierRatio)
+                                      outlierRatio: fit.outlierRatio,
+                                      sampleRate: sampleRate,
+                                      sampleCount: samples.count,
+                                      routeDescription: routeDescription,
+                                      routeWarning: routeWarning)
     }
 
-    private static func fallback(selectedBPH: Int, reasonScore: Double) -> WatchMeasurementResult {
+    private static func fallback(
+        selectedBPH: Int,
+        reasonScore: Double,
+        sampleRate: Double,
+        sampleCount: Int,
+        routeDescription: String,
+        routeWarning: String?
+    ) -> WatchMeasurementResult {
         WatchMeasurementResult(selectedBPH: selectedBPH,
                                detectedBPH: Double(selectedBPH),
                                rateSecondsPerDay: 0,
                                qualityScore: reasonScore,
                                quality: .low,
                                validPeakCount: 0,
-                               outlierRatio: 1)
+                               outlierRatio: 1,
+                               sampleRate: sampleRate,
+                               sampleCount: sampleCount,
+                               routeDescription: routeDescription,
+                               routeWarning: routeWarning)
     }
 
     private static func preprocess(_ input: [Float]) -> [Float] {
@@ -314,7 +349,7 @@ enum WatchDSP {
 private extension Array where Element == Float {
     func strideSample(maxCount: Int) -> [Float] {
         guard count > maxCount else { return self }
-        let strideBy = max(1, count / maxCount)
+        let strideBy = Swift.max(1, count / maxCount)
         var result: [Float] = []
         result.reserveCapacity(maxCount)
         var index = 0

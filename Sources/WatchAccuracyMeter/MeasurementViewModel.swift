@@ -8,6 +8,7 @@ final class MeasurementViewModel: ObservableObject {
     @Published var elapsedSeconds: Double = 0
     @Published var progress: Double = 0
     @Published var liveLevelText: String = "0%"
+    @Published var routeWarning: String?
 
     var isMeasuring: Bool {
         if case .measuring = state { return true }
@@ -17,12 +18,23 @@ final class MeasurementViewModel: ObservableObject {
     private let audioMeter = AudioWatchMeter()
     private let measurementDuration: TimeInterval = 60
     private var timerTask: Task<Void, Never>?
+    private var measurementTask: Task<Void, Never>?
 
-    func startMeasurement() async {
+    func startMeasurement() {
+        measurementTask?.cancel()
+        measurementTask = Task { [weak self] in
+            await self?.runMeasurement()
+        }
+    }
+
+    private func runMeasurement() async {
         state = .requestingPermission
+        routeWarning = nil
 
         do {
             try await audioMeter.requestPermissionIfNeeded()
+            try Task.checkCancellation()
+
             state = .measuring
             elapsedSeconds = 0
             progress = 0
@@ -33,11 +45,16 @@ final class MeasurementViewModel: ObservableObject {
                     self?.liveLevelText = "\(pct)%"
                 }
             }
+            routeWarning = audioMeter.routeWarning
 
             startTimer()
 
             try await Task.sleep(nanoseconds: UInt64(measurementDuration * 1_000_000_000))
+            try Task.checkCancellation()
             await finishMeasurement()
+        } catch is CancellationError {
+            cancelTimer()
+            audioMeter.stop()
         } catch {
             cancelTimer()
             audioMeter.stop()
@@ -46,16 +63,21 @@ final class MeasurementViewModel: ObservableObject {
     }
 
     func cancelMeasurement() {
+        measurementTask?.cancel()
+        measurementTask = nil
         cancelTimer()
         audioMeter.stop()
         reset()
     }
 
     func reset() {
+        measurementTask?.cancel()
+        measurementTask = nil
         state = .idle
         elapsedSeconds = 0
         progress = 0
         liveLevelText = "0%"
+        routeWarning = nil
     }
 
     private func finishMeasurement() async {
@@ -65,11 +87,18 @@ final class MeasurementViewModel: ObservableObject {
         let samples = audioMeter.stopAndReturnSamples()
         let sampleRate = audioMeter.actualSampleRate
         let selected = selectedBPH.rawValue
+        let routeDescription = audioMeter.routeDescription
+        let routeWarning = audioMeter.routeWarning
 
         let result = await Task.detached(priority: .userInitiated) {
-            WatchDSP.analyze(samples: samples, sampleRate: sampleRate, selectedBPH: selected)
+            WatchDSP.analyze(samples: samples,
+                             sampleRate: sampleRate,
+                             selectedBPH: selected,
+                             routeDescription: routeDescription,
+                             routeWarning: routeWarning)
         }.value
 
+        measurementTask = nil
         state = .result(result)
     }
 
@@ -94,4 +123,3 @@ final class MeasurementViewModel: ObservableObject {
         timerTask = nil
     }
 }
-
