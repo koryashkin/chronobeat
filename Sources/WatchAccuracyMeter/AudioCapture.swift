@@ -62,6 +62,7 @@ enum RecognitionIssue: String, Codable, Equatable, Sendable {
     case clipping
     case unstableGrid
     case wrongBPHLikely
+    case ambiguousBeatRate
     case unsupportedRoute
 
     var label: String {
@@ -76,6 +77,8 @@ enum RecognitionIssue: String, Codable, Equatable, Sendable {
             return "Unstable tick grid"
         case .wrongBPHLikely:
             return "Wrong beat rate likely"
+        case .ambiguousBeatRate:
+            return "Ambiguous beat rate"
         case .unsupportedRoute:
             return "Unsupported input route"
         }

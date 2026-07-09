@@ -12,6 +12,33 @@ enum BeatRate: Int, CaseIterable, Identifiable {
     var label: String { "\(rawValue) bph" }
 }
 
+enum BeatRateSelection: Hashable, Identifiable, CaseIterable {
+    case auto
+    case manual(BeatRate)
+
+    static var allCases: [BeatRateSelection] {
+        [.auto] + BeatRate.allCases.map { .manual($0) }
+    }
+
+    var id: String {
+        switch self {
+        case .auto:
+            return "auto"
+        case .manual(let beatRate):
+            return "\(beatRate.rawValue)"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .auto:
+            return "Auto BPH"
+        case .manual(let beatRate):
+            return beatRate.label
+        }
+    }
+}
+
 enum MeasurementState {
     case idle
     case requestingPermission
@@ -58,6 +85,7 @@ enum SignalQuality: String, Equatable {
 
 struct WatchMeasurementResult {
     let selectedBPH: Int
+    let isAutoBPH: Bool
     let detectedBPH: Double
     let rateSecondsPerDay: Double
     let qualityScore: Double
@@ -121,6 +149,9 @@ struct WatchMeasurementResult {
             if dominantFailureReason == .wrongBPHLikely {
                 return "Ticks were detected, but they do not match the selected beat rate. Check the BPH setting and try again."
             }
+            if dominantFailureReason == .ambiguousBeatRate {
+                return "Ticks were detected, but the beat rate is ambiguous. Try another measurement with the watch closer to the microphone."
+            }
             if dominantFailureReason == .unstableGrid || periodicityScore < 0.50 {
                 return "Tick candidates were detected, but the beat pattern is unstable. Keep the watch still and try again."
             }
@@ -130,6 +161,66 @@ struct WatchMeasurementResult {
 }
 
 enum WatchDSP {
+    static func analyzeAuto(capture: AudioCapture) -> WatchMeasurementResult {
+        analyzeAuto(samples: capture.samples,
+                    sampleRate: capture.sampleRate,
+                    routeDescription: capture.routeDescription,
+                    routeWarning: capture.routeWarning)
+    }
+
+    static func analyzeAuto(
+        samples: [Float],
+        sampleRate: Double,
+        routeDescription: String = "Unknown",
+        routeWarning: String? = nil
+    ) -> WatchMeasurementResult {
+        let candidates = BeatRate.allCases.map { beatRate in
+            analyze(samples: samples,
+                    sampleRate: sampleRate,
+                    selectedBPH: beatRate.rawValue,
+                    routeDescription: routeDescription,
+                    routeWarning: routeWarning,
+                    checksCompetingBeatRates: false,
+                    isAutoBPH: true)
+        }
+        let sortedCandidates = candidates.sorted { lhs, rhs in
+            autoBeatRateScore(lhs) > autoBeatRateScore(rhs)
+        }
+
+        guard let best = sortedCandidates.first else {
+            return fallback(selectedBPH: BeatRate.bph28800.rawValue,
+                            reasonScore: 0,
+                            detectionStats: .empty,
+                            audioStats: AudioLevelStats.measure(samples),
+                            expectedTickCount: 0,
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning,
+                            isAutoBPH: true)
+        }
+
+        let bestScore = autoBeatRateScore(best)
+        let secondScore = sortedCandidates.dropFirst().first.map(autoBeatRateScore) ?? 0
+        let margin = bestScore - secondScore
+        let isAmbiguous = best.quality == .low
+            || bestScore < 0.58
+            || margin < 0.06
+            || best.outlierRatio > 0.60
+            || best.periodicityScore < 0.50
+
+        if isAmbiguous {
+            return replacing(result: best,
+                             quality: .low,
+                             qualityScore: min(best.qualityScore, 49),
+                             recognitionConfidence: min(best.recognitionConfidence, 0.49),
+                             dominantFailureReason: .ambiguousBeatRate,
+                             isAutoBPH: true)
+        }
+
+        return replacing(result: best, isAutoBPH: true)
+    }
+
     static func analyze(
         capture: AudioCapture,
         selectedBPH: Int
@@ -146,7 +237,9 @@ enum WatchDSP {
         sampleRate: Double,
         selectedBPH: Int,
         routeDescription: String = "Unknown",
-        routeWarning: String? = nil
+        routeWarning: String? = nil,
+        checksCompetingBeatRates: Bool = true,
+        isAutoBPH: Bool = false
     ) -> WatchMeasurementResult {
         let expectedPeriod = 3600.0 / Double(selectedBPH)
         let expectedTickCount = expectedTickCount(sampleCount: samples.count,
@@ -163,7 +256,8 @@ enum WatchDSP {
                             sampleRate: sampleRate,
                             sampleCount: samples.count,
                             routeDescription: routeDescription,
-                            routeWarning: routeWarning)
+                            routeWarning: routeWarning,
+                            isAutoBPH: isAutoBPH)
         }
 
         let processed = preprocess(samples, sampleRate: sampleRate)
@@ -187,7 +281,8 @@ enum WatchDSP {
                             sampleRate: sampleRate,
                             sampleCount: samples.count,
                             routeDescription: routeDescription,
-                            routeWarning: routeWarning)
+                            routeWarning: routeWarning,
+                            isAutoBPH: isAutoBPH)
         }
 
         let detection = selectedDetection.detection
@@ -224,22 +319,41 @@ enum WatchDSP {
         } else {
             quality = .low
         }
+        let competition = checksCompetingBeatRates
+            ? beatRateCompetition(envelope: envelope,
+                                  sampleRate: sampleRate,
+                                  selectedBPH: selectedBPH,
+                                  expectedTickCount: expectedTickCount,
+                                  selectedDetection: selectedDetection,
+                                  preliminaryQuality: quality)
+            : .none(selectedScore: selectedDetection.selectionScore)
+        let finalQuality: SignalQuality
+        let finalQualityScore: Double
+        if competition.isLikelyWrongBeatRate {
+            finalQuality = .low
+            finalQualityScore = min(qualityScore, 49)
+        } else {
+            finalQuality = quality
+            finalQualityScore = qualityScore
+        }
         let recognitionConfidence = recognitionConfidence(qualityScore: qualityScore,
                                                           beatCoverage: fit.beatCoverage,
                                                           tickRecallEstimate: tickRecallEstimate,
                                                           periodicityScore: selectedDetection.periodicityScore)
-        let dominantIssue = dominantFailureReason(quality: quality,
+        let dominantIssue = dominantFailureReason(quality: finalQuality,
                                                   audioStats: audioStats,
                                                   detectionStats: detection.stats,
                                                   fit: fit,
                                                   expectedTickCount: expectedTickCount,
-                                                  routeWarning: routeWarning)
+                                                  routeWarning: routeWarning,
+                                                  forcedIssue: competition.isLikelyWrongBeatRate ? .wrongBPHLikely : nil)
 
         return WatchMeasurementResult(selectedBPH: selectedBPH,
+                                      isAutoBPH: isAutoBPH,
                                       detectedBPH: detectedBPH,
                                       rateSecondsPerDay: rate,
-                                      qualityScore: qualityScore,
-                                      quality: quality,
+                                      qualityScore: finalQualityScore,
+                                      quality: finalQuality,
                                       detectedPeakCount: detection.stats.candidatePeakCount,
                                       validPeakCount: fit.validCount,
                                       expectedTickCount: expectedTickCount,
@@ -251,7 +365,7 @@ enum WatchDSP {
                                       clippingRatio: audioStats.clippingRatio,
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
-                                      recognitionConfidence: recognitionConfidence,
+                                      recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
                                       tickRecallEstimate: tickRecallEstimate,
                                       analysisWindowCount: fit.analysisWindowCount,
                                       successfulWindowCount: fit.successfulWindowCount,
@@ -274,9 +388,11 @@ enum WatchDSP {
         sampleRate: Double,
         sampleCount: Int,
         routeDescription: String,
-        routeWarning: String?
+        routeWarning: String?,
+        isAutoBPH: Bool = false
     ) -> WatchMeasurementResult {
         WatchMeasurementResult(selectedBPH: selectedBPH,
+                               isAutoBPH: isAutoBPH,
                                detectedBPH: Double(selectedBPH),
                                rateSecondsPerDay: 0,
                                qualityScore: reasonScore,
@@ -619,6 +735,97 @@ enum WatchDSP {
         return max(0, min(1, score))
     }
 
+    private struct BeatRateCompetition {
+        let selectedScore: Double
+        let competingBPH: Int?
+        let competingScore: Double
+        let isLikelyWrongBeatRate: Bool
+
+        static func none(selectedScore: Double) -> BeatRateCompetition {
+            BeatRateCompetition(selectedScore: selectedScore,
+                                competingBPH: nil,
+                                competingScore: 0,
+                                isLikelyWrongBeatRate: false)
+        }
+    }
+
+    private static func beatRateCompetition(
+        envelope: [Float],
+        sampleRate: Double,
+        selectedBPH: Int,
+        expectedTickCount: Int,
+        selectedDetection: SelectedDetection,
+        preliminaryQuality: SignalQuality
+    ) -> BeatRateCompetition {
+        guard preliminaryQuality != .low else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        let selectedCandidateMatch = candidateCountMatch(candidatePeakCount: selectedDetection.detection.stats.candidatePeakCount,
+                                                        expectedTickCount: expectedTickCount)
+        let selectedLooksAmbiguous = preliminaryQuality == .medium
+            || selectedCandidateMatch < 0.85
+            || selectedDetection.fit.outlierRatio > 0.25
+            || selectedDetection.periodicityScore < 0.80
+        guard selectedLooksAmbiguous else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        var bestCompetingBPH: Int?
+        var bestCompetingDetection: SelectedDetection?
+
+        for beatRate in BeatRate.allCases where beatRate.rawValue != selectedBPH {
+            let candidatePeriod = 3600.0 / Double(beatRate.rawValue)
+            let candidateExpectedCount = Self.expectedTickCount(sampleCount: envelope.count,
+                                                                sampleRate: sampleRate,
+                                                                expectedPeriod: candidatePeriod)
+            guard let detection = bestDetection(envelope: envelope,
+                                                sampleRate: sampleRate,
+                                                selectedBPH: beatRate.rawValue,
+                                                expectedPeriod: candidatePeriod,
+                                                expectedTickCount: candidateExpectedCount) else {
+                continue
+            }
+            let competingCandidateMatch = candidateCountMatch(candidatePeakCount: detection.detection.stats.candidatePeakCount,
+                                                              expectedTickCount: candidateExpectedCount)
+            let competingCountIsPlausible = competingCandidateMatch >= 0.55
+                || competingCandidateMatch >= selectedCandidateMatch + 0.03
+            guard detection.fit.validCount >= 80,
+                  detection.fit.beatCoverage >= 0.70,
+                  detection.periodicityScore >= 0.50,
+                  competingCountIsPlausible else {
+                continue
+            }
+
+            if bestCompetingDetection == nil || detection.selectionScore > bestCompetingDetection!.selectionScore {
+                bestCompetingDetection = detection
+                bestCompetingBPH = beatRate.rawValue
+            }
+        }
+
+        guard let bestCompetingDetection, let bestCompetingBPH else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        let selectedScore = selectedDetection.selectionScore
+        let competingScore = bestCompetingDetection.selectionScore
+        let competitorIsMateriallyBetter = competingScore >= selectedScore + 0.06
+        let competitorIsCleaner = bestCompetingDetection.fit.outlierRatio + 0.10 < selectedDetection.fit.outlierRatio
+            || bestCompetingDetection.periodicityScore >= selectedDetection.periodicityScore + 0.08
+            || bestCompetingDetection.fit.beatCoverage >= selectedDetection.fit.beatCoverage + 0.08
+        let selectedIsNoisyOrAmbiguous = selectedDetection.fit.outlierRatio > 0.20
+            || selectedCandidateMatch < 0.85
+            || selectedDetection.periodicityScore < 0.80
+        let isLikelyWrong = competitorIsMateriallyBetter
+            && competitorIsCleaner
+            && selectedIsNoisyOrAmbiguous
+
+        return BeatRateCompetition(selectedScore: selectedScore,
+                                   competingBPH: bestCompetingBPH,
+                                   competingScore: competingScore,
+                                   isLikelyWrongBeatRate: isLikelyWrong)
+    }
+
     private static func candidateCountMatch(candidatePeakCount: Int, expectedTickCount: Int) -> Double {
         let expected = max(expectedTickCount, 1)
         return max(0, 1 - abs(Double(candidatePeakCount - expected)) / Double(expected))
@@ -946,16 +1153,81 @@ enum WatchDSP {
         return max(0, min(1, confidence))
     }
 
+    private static func autoBeatRateScore(_ result: WatchMeasurementResult) -> Double {
+        let candidateMatch = candidateCountMatch(candidatePeakCount: result.detectedPeakCount,
+                                                 expectedTickCount: result.expectedTickCount)
+        let qualityComponent: Double
+        switch result.quality {
+        case .high:
+            qualityComponent = 1
+        case .medium:
+            qualityComponent = 0.72
+        case .low:
+            qualityComponent = max(0, result.qualityScore / 100) * 0.50
+        }
+
+        let score = qualityComponent * 0.22
+            + result.beatCoverage * 0.22
+            + result.tickRecallEstimate * 0.18
+            + result.periodicityScore * 0.18
+            + candidateMatch * 0.12
+            + max(0, 1 - result.outlierRatio) * 0.08
+        return max(0, min(1, score))
+    }
+
+    private static func replacing(
+        result: WatchMeasurementResult,
+        quality: SignalQuality? = nil,
+        qualityScore: Double? = nil,
+        recognitionConfidence: Double? = nil,
+        dominantFailureReason: RecognitionIssue? = nil,
+        isAutoBPH: Bool? = nil
+    ) -> WatchMeasurementResult {
+        WatchMeasurementResult(selectedBPH: result.selectedBPH,
+                               isAutoBPH: isAutoBPH ?? result.isAutoBPH,
+                               detectedBPH: result.detectedBPH,
+                               rateSecondsPerDay: result.rateSecondsPerDay,
+                               qualityScore: qualityScore ?? result.qualityScore,
+                               quality: quality ?? result.quality,
+                               detectedPeakCount: result.detectedPeakCount,
+                               validPeakCount: result.validPeakCount,
+                               expectedTickCount: result.expectedTickCount,
+                               beatCoverage: result.beatCoverage,
+                               outlierRatio: result.outlierRatio,
+                               chosenThresholdScale: result.chosenThresholdScale,
+                               rmsLevel: result.rmsLevel,
+                               peakLevel: result.peakLevel,
+                               clippingRatio: result.clippingRatio,
+                               estimatedSnrDb: result.estimatedSnrDb,
+                               periodicityScore: result.periodicityScore,
+                               recognitionConfidence: recognitionConfidence ?? result.recognitionConfidence,
+                               tickRecallEstimate: result.tickRecallEstimate,
+                               analysisWindowCount: result.analysisWindowCount,
+                               successfulWindowCount: result.successfulWindowCount,
+                               dominantFailureReason: dominantFailureReason ?? result.dominantFailureReason,
+                               detectionThreshold: result.detectionThreshold,
+                               envelopeMedian: result.envelopeMedian,
+                               envelopeP95: result.envelopeP95,
+                               sampleRate: result.sampleRate,
+                               sampleCount: result.sampleCount,
+                               routeDescription: result.routeDescription,
+                               routeWarning: result.routeWarning)
+    }
+
     private static func dominantFailureReason(
         quality: SignalQuality,
         audioStats: AudioLevelStats,
         detectionStats: PeakDetectionStats,
         fit: FitResult,
         expectedTickCount: Int,
-        routeWarning: String?
+        routeWarning: String?,
+        forcedIssue: RecognitionIssue? = nil
     ) -> RecognitionIssue? {
         guard quality == .low else { return nil }
 
+        if let forcedIssue {
+            return forcedIssue
+        }
         if routeWarning != nil {
             return .unsupportedRoute
         }

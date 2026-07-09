@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		42AE502C5041217E3FE2F066 /* iphone-bottom-28800-0-20s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */; };
 		4926A74A1555E29B3F605E0A /* AudioWatchMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */; };
 		4F0297FC9F66107E3D8EDCFB /* WatchAccuracyMeterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */; };
 		5FE6A2AEF60D91B02575618F /* WatchDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6A032089774DB52785B700 /* WatchDSPTests.swift */; };
@@ -36,6 +37,7 @@
 		3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAccuracyMeterApp.swift; sourceTree = "<group>"; };
 		497144F15FA91B5380E79D32 /* WatchAccuracyMeter.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchAccuracyMeter.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSP.swift; sourceTree = "<group>"; };
+		8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "iphone-bottom-28800-0-20s.wav"; sourceTree = "<group>"; };
 		97FF9BB9243E8812CA39FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "king-seiko-28800-10-30s.wav"; sourceTree = "<group>"; };
 		AD6A032089774DB52785B700 /* WatchDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSPTests.swift; sourceTree = "<group>"; };
@@ -91,6 +93,7 @@
 		F7055FBA4655093767D5F4C2 /* Fixtures */ = {
 			isa = PBXGroup;
 			children = (
+				8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */,
 				A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */,
 			);
 			path = Fixtures;
@@ -175,6 +178,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				42AE502C5041217E3FE2F066 /* iphone-bottom-28800-0-20s.wav in Resources */,
 				B1CD19CEEA0BCC325C6FA74C /* king-seiko-28800-10-30s.wav in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

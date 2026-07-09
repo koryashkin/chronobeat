@@ -128,6 +128,21 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
+    func testAutoBPHDetectsSyntheticBeatRate() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
+                                                nominalBPH: BeatRate.bph21600.rawValue,
+                                                duration: 20)
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Auto synthetic")
+
+        XCTAssertEqual(result.selectedBPH, BeatRate.bph21600.rawValue)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
+    }
+
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
         let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
@@ -165,9 +180,67 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
+    func testRealDeviceBottomMicFixtureDetectsSelectedBeatRate() throws {
+        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "iPhone bottom mic fixture")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.validPeakCount, 140)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
+    }
+
+    func testRealDeviceBottomMicFixtureAutoDetectsBeatRate() throws {
+        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "iPhone bottom mic fixture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+    }
+
+    func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
+        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+        let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
+
+        for beatRate in wrongBeatRates {
+            let result = WatchDSP.analyze(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          selectedBPH: beatRate,
+                                          routeDescription: "iPhone bottom mic fixture")
+
+            XCTAssertEqual(result.quality, .low, "Expected \(beatRate) bph to be rejected.")
+            XCTAssertLessThan(result.qualityScore, 50)
+        }
+    }
+
+    func testHighBeatRateWatchCannotMasqueradeAsHalfRate() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0,
+                                                nominalBPH: BeatRate.bph36000.rawValue,
+                                                duration: 20)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: BeatRate.bph18000.rawValue,
+                                      routeDescription: "Half-rate harmonic")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .wrongBPHLikely)
+        XCTAssertLessThan(result.qualityScore, 50)
+    }
+
     func testRealFixtureBenchmarkWindowsMeetRecognitionGate() throws {
         let fixtureSpecs = [
-            LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH)
+            LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH),
+            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH)
         ]
         var outcomes: [FixtureWindowOutcome] = []
 
@@ -226,6 +299,7 @@ final class WatchDSPTests: XCTestCase {
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: export.diagnosticsURL)) as? [String: Any]
         XCTAssertEqual(json?["audioFileName"] as? String, "capture.wav")
         XCTAssertEqual(json?["selectedBPH"] as? Int, selectedBPH)
+        XCTAssertEqual(json?["isAutoBPH"] as? Bool, false)
         XCTAssertEqual(json?["routeDescription"] as? String, "Synthetic microphone")
         XCTAssertNotNil(json?["recognitionConfidence"])
 
@@ -534,16 +608,17 @@ final class MeasurementViewModelAudioTests: XCTestCase {
     private let selectedBPH = 28_800
 
     func testMeasurementCompletesWithInjectedAudioSamples() async throws {
-        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 11, duration: 20)
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 11, duration: 12)
         let audioMeter = FakeAudioMeter(samples: samples,
                                         sampleRate: sampleRate,
                                         routeDescription: "Synthetic microphone")
         let viewModel = MeasurementViewModel(audioMeter: audioMeter,
                                              measurementDuration: 0.01)
+        viewModel.selectedBPH = .manual(.bph28800)
 
         viewModel.startMeasurement()
 
-        try await waitUntil {
+        try await waitUntil(timeout: 15) {
             if case .result = viewModel.state { return true }
             return false
         }
@@ -735,6 +810,12 @@ final class DomainModelTests: XCTestCase {
         XCTAssertEqual(BeatRate.bph28800.id, 28_800)
     }
 
+    func testBeatRateSelectionIncludesAutoOptionFirst() {
+        XCTAssertEqual(BeatRateSelection.allCases.first, .auto)
+        XCTAssertEqual(BeatRateSelection.auto.label, "Auto BPH")
+        XCTAssertTrue(BeatRateSelection.allCases.contains(.manual(.bph28800)))
+    }
+
     func testSignalQualityLabelsAreUserReadable() {
         XCTAssertEqual(SignalQuality.high.label, "High")
         XCTAssertEqual(SignalQuality.medium.label, "Medium")
@@ -767,6 +848,7 @@ final class DomainModelTests: XCTestCase {
         detectedPeakCount: Int = 480
     ) -> WatchMeasurementResult {
         WatchMeasurementResult(selectedBPH: 28_800,
+                               isAutoBPH: false,
                                detectedBPH: 28_800,
                                rateSecondsPerDay: rateSecondsPerDay,
                                qualityScore: quality == .high ? 100 : 10,
@@ -818,6 +900,7 @@ final class MeasurementStateTests: XCTestCase {
 
     private static func makeResult() -> WatchMeasurementResult {
         WatchMeasurementResult(selectedBPH: 28_800,
+                               isAutoBPH: false,
                                detectedBPH: 28_800,
                                rateSecondsPerDay: 0,
                                qualityScore: 100,

@@ -3,7 +3,7 @@ import AVFoundation
 
 @MainActor
 final class MeasurementViewModel: ObservableObject {
-    @Published var selectedBPH: BeatRate = .bph28800
+    @Published var selectedBPH: BeatRateSelection = .auto
     @Published var state: MeasurementState = .idle
     @Published var elapsedSeconds: Double = 0
     @Published var progress: Double = 0
@@ -51,7 +51,7 @@ final class MeasurementViewModel: ObservableObject {
         }
     }
 
-    private func runMeasurement(selectedBPH: BeatRate) async {
+    private func runMeasurement(selectedBPH: BeatRateSelection) async {
         state = .requestingPermission
         routeWarning = nil
 
@@ -115,7 +115,7 @@ final class MeasurementViewModel: ObservableObject {
         cancelMeasurement()
     }
 
-    private func finishMeasurement(selectedBPH: BeatRate) async {
+    private func finishMeasurement(selectedBPH: BeatRateSelection) async {
         cancelTimer()
         guard !Task.isCancelled else { return }
         state = .analyzing
@@ -125,10 +125,14 @@ final class MeasurementViewModel: ObservableObject {
                                    sampleRate: audioMeter.actualSampleRate,
                                    routeDescription: audioMeter.routeDescription,
                                    routeWarning: audioMeter.routeWarning)
-        let selected = selectedBPH.rawValue
 
         let result = await Task.detached(priority: .userInitiated) {
-            WatchDSP.analyze(capture: capture, selectedBPH: selected)
+            switch selectedBPH {
+            case .auto:
+                WatchDSP.analyzeAuto(capture: capture)
+            case .manual(let beatRate):
+                WatchDSP.analyze(capture: capture, selectedBPH: beatRate.rawValue)
+            }
         }.value
 
         guard !Task.isCancelled else { return }

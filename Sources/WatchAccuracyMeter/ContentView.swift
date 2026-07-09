@@ -11,8 +11,8 @@ struct ContentView: View {
                     header
 
                     Picker("Beat rate", selection: $viewModel.selectedBPH) {
-                        ForEach(BeatRate.allCases) { rate in
-                            Text(rate.label).tag(rate)
+                        ForEach(BeatRateSelection.allCases) { selection in
+                            Text(selection.label).tag(selection)
                         }
                     }
                     .pickerStyle(.menu)
@@ -68,14 +68,9 @@ struct ContentView: View {
                     .accessibilityIdentifier("measurementProgress")
                 Text("Listening… \(Int(viewModel.elapsedSeconds)) / 60 sec")
                     .font(.title3.monospacedDigit())
-                Text("Live level: \(viewModel.liveLevelText)")
-                    .foregroundStyle(.secondary)
                 CaptureStatusView(isReceivingAudio: viewModel.isReceivingAudio,
                                   capturedAudioSeconds: viewModel.capturedAudioSeconds,
-                                  capturedSampleCount: viewModel.capturedSampleCount,
-                                  rmsLevel: viewModel.liveRmsLevel,
-                                  peakLevel: viewModel.livePeakLevel,
-                                  clippingRatio: viewModel.liveClippingRatio)
+                                  capturedSampleCount: viewModel.capturedSampleCount)
                 if let routeWarning = viewModel.routeWarning {
                     Text(routeWarning)
                         .font(.footnote)
@@ -124,26 +119,25 @@ struct CaptureStatusView: View {
     let isReceivingAudio: Bool
     let capturedAudioSeconds: Double
     let capturedSampleCount: Int
-    let rmsLevel: Double
-    let peakLevel: Double
-    let clippingRatio: Double
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: isReceivingAudio ? "waveform.circle.fill" : "waveform.circle")
-                .font(.title2)
-                .foregroundStyle(isReceivingAudio ? .green : .secondary)
-                .accessibilityHidden(true)
+            ZStack {
+                Circle()
+                    .fill(isReceivingAudio ? .green.opacity(0.18) : .secondary.opacity(0.14))
+                    .frame(width: 36, height: 36)
+                Image(systemName: isReceivingAudio ? "waveform" : "mic.slash")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isReceivingAudio ? .green : .secondary)
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(isReceivingAudio ? "Audio samples received" : "Waiting for audio samples")
+                Text(isReceivingAudio ? "Receiving microphone audio" : "Waiting for microphone audio")
                     .font(.subheadline.weight(.semibold))
-                Text("\(String(format: "%.1f", capturedAudioSeconds)) sec · \(capturedSampleCount.formatted()) samples")
+                Text("\(String(format: "%.1f", capturedAudioSeconds)) sec recorded · \(capturedSampleCount.formatted()) samples")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Text("RMS \(String(format: "%.5f", rmsLevel)) · Peak \(String(format: "%.4f", peakLevel)) · Clip \(String(format: "%.3f", clippingRatio * 100))%")
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(clippingRatio > 0.001 ? .orange : .secondary)
             }
 
             Spacer(minLength: 0)
@@ -172,7 +166,12 @@ struct ResultView: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Selected beat rate: \(result.selectedBPH) bph")
+                if result.isAutoBPH {
+                    Text("Beat rate mode: Auto")
+                    Text("Detected beat rate: \(result.selectedBPH.formatted()) bph")
+                } else {
+                    Text("Selected beat rate: \(result.selectedBPH.formatted()) bph")
+                }
                 if result.quality != .low {
                     Text("Measured beat rate: \(String(format: "%.1f", result.detectedBPH)) bph")
                 }
