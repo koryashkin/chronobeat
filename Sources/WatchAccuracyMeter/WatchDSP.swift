@@ -73,6 +73,11 @@ struct WatchMeasurementResult {
     let clippingRatio: Double
     let estimatedSnrDb: Double
     let periodicityScore: Double
+    let recognitionConfidence: Double
+    let tickRecallEstimate: Double
+    let analysisWindowCount: Int
+    let successfulWindowCount: Int
+    let dominantFailureReason: RecognitionIssue?
     let detectionThreshold: Double
     let envelopeMedian: Double
     let envelopeP95: Double
@@ -98,19 +103,25 @@ struct WatchMeasurementResult {
         case .medium:
             return "Approximate result. Try another measurement in a quieter room to confirm."
         case .low:
-            if clippingRatio > 0.001 {
+            if dominantFailureReason == .unsupportedRoute {
+                return "The current input route is not ideal. Use the built-in iPhone microphone for best results."
+            }
+            if dominantFailureReason == .clipping || clippingRatio > 0.001 {
                 return "Audio is clipping. Move the watch slightly farther from the microphone and try again."
             }
-            if peakLevel < 0.002 {
+            if dominantFailureReason == .tooQuiet || peakLevel < 0.002 {
                 return "The tick signal is too quiet. Put the watch caseback directly against the bottom microphone and try again."
             }
             if detectedPeakCount == 0 {
                 return "No tick candidates were detected. Put the watch caseback directly against the bottom microphone and try again."
             }
-            if estimatedSnrDb < 3 {
+            if dominantFailureReason == .tooNoisy || estimatedSnrDb < 3 {
                 return "Background noise is masking the ticks. Use a quieter room and keep the phone still."
             }
-            if periodicityScore < 0.50 {
+            if dominantFailureReason == .wrongBPHLikely {
+                return "Ticks were detected, but they do not match the selected beat rate. Check the BPH setting and try again."
+            }
+            if dominantFailureReason == .unstableGrid || periodicityScore < 0.50 {
                 return "Tick candidates were detected, but the beat pattern is unstable. Keep the watch still and try again."
             }
             return "Tick candidates were detected, but they did not form a stable beat grid. Keep the watch still and try again."
@@ -119,6 +130,17 @@ struct WatchMeasurementResult {
 }
 
 enum WatchDSP {
+    static func analyze(
+        capture: AudioCapture,
+        selectedBPH: Int
+    ) -> WatchMeasurementResult {
+        analyze(samples: capture.samples,
+                sampleRate: capture.sampleRate,
+                selectedBPH: selectedBPH,
+                routeDescription: capture.routeDescription,
+                routeWarning: capture.routeWarning)
+    }
+
     static func analyze(
         samples: [Float],
         sampleRate: Double,
@@ -130,7 +152,7 @@ enum WatchDSP {
         let expectedTickCount = expectedTickCount(sampleCount: samples.count,
                                                   sampleRate: sampleRate,
                                                   expectedPeriod: expectedPeriod)
-        let audioStats = audioStats(samples)
+        let audioStats = AudioLevelStats.measure(samples)
 
         guard samples.count > Int(sampleRate * 10) else {
             return fallback(selectedBPH: selectedBPH,
@@ -145,7 +167,8 @@ enum WatchDSP {
         }
 
         let processed = preprocess(samples, sampleRate: sampleRate)
-        let envelope = makeEnvelope(processed, sampleRate: sampleRate)
+        let envelope = normalizeEnvelope(makeEnvelope(processed, sampleRate: sampleRate),
+                                          sampleRate: sampleRate)
         let selectedDetection = bestDetection(envelope: envelope,
                                               sampleRate: sampleRate,
                                               selectedBPH: selectedBPH,
@@ -171,20 +194,46 @@ enum WatchDSP {
         let fit = selectedDetection.fit
         let detectedBPH = 3600.0 / fit.period
         let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
-        let qualityScore = qualityScore(validPeaks: fit.validCount,
+        var qualityScore = qualityScore(validPeaks: fit.validCount,
+                                        candidatePeakCount: detection.stats.candidatePeakCount,
                                         expectedTickCount: expectedTickCount,
                                         beatCoverage: fit.beatCoverage,
                                         outlierRatio: fit.outlierRatio,
                                         windowRates: fit.windowRates,
                                         periodicityScore: selectedDetection.periodicityScore)
+        let tickRecallEstimate = tickRecallEstimate(validPeaks: fit.validCount,
+                                                    expectedTickCount: expectedTickCount)
         let quality: SignalQuality
+        let hasConfidentCoverage = hasConfidentCoverage(beatCoverage: fit.beatCoverage,
+                                                        candidatePeakCount: detection.stats.candidatePeakCount,
+                                                        validPeakCount: fit.validCount,
+                                                        expectedTickCount: expectedTickCount)
+        let hasRecoverableRealGrid = fit.validCount >= 100
+            && fit.beatCoverage >= 0.70
+            && tickRecallEstimate >= 0.70
+            && selectedDetection.periodicityScore >= 0.50
+            && fit.outlierRatio < 0.70
+        if hasRecoverableRealGrid {
+            qualityScore = max(qualityScore, 55)
+        }
+
         if qualityScore >= 80, fit.beatCoverage >= 0.80, selectedDetection.periodicityScore >= 0.70 {
             quality = .high
-        } else if qualityScore >= 50, fit.beatCoverage >= 0.80, selectedDetection.periodicityScore >= 0.50 {
+        } else if qualityScore >= 50, hasConfidentCoverage, selectedDetection.periodicityScore >= 0.50 {
             quality = .medium
         } else {
             quality = .low
         }
+        let recognitionConfidence = recognitionConfidence(qualityScore: qualityScore,
+                                                          beatCoverage: fit.beatCoverage,
+                                                          tickRecallEstimate: tickRecallEstimate,
+                                                          periodicityScore: selectedDetection.periodicityScore)
+        let dominantIssue = dominantFailureReason(quality: quality,
+                                                  audioStats: audioStats,
+                                                  detectionStats: detection.stats,
+                                                  fit: fit,
+                                                  expectedTickCount: expectedTickCount,
+                                                  routeWarning: routeWarning)
 
         return WatchMeasurementResult(selectedBPH: selectedBPH,
                                       detectedBPH: detectedBPH,
@@ -202,6 +251,11 @@ enum WatchDSP {
                                       clippingRatio: audioStats.clippingRatio,
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
+                                      recognitionConfidence: recognitionConfidence,
+                                      tickRecallEstimate: tickRecallEstimate,
+                                      analysisWindowCount: fit.analysisWindowCount,
+                                      successfulWindowCount: fit.successfulWindowCount,
+                                      dominantFailureReason: dominantIssue,
                                       detectionThreshold: detection.stats.threshold,
                                       envelopeMedian: detection.stats.envelopeMedian,
                                       envelopeP95: detection.stats.envelopeP95,
@@ -215,7 +269,7 @@ enum WatchDSP {
         selectedBPH: Int,
         reasonScore: Double,
         detectionStats: PeakDetectionStats,
-        audioStats: AudioStats,
+        audioStats: AudioLevelStats,
         expectedTickCount: Int,
         sampleRate: Double,
         sampleCount: Int,
@@ -238,6 +292,13 @@ enum WatchDSP {
                                clippingRatio: audioStats.clippingRatio,
                                estimatedSnrDb: detectionStats.estimatedSnrDb,
                                periodicityScore: 0,
+                               recognitionConfidence: 0,
+                               tickRecallEstimate: 0,
+                               analysisWindowCount: 0,
+                               successfulWindowCount: 0,
+                               dominantFailureReason: fallbackFailureReason(audioStats: audioStats,
+                                                                            detectionStats: detectionStats,
+                                                                            routeWarning: routeWarning),
                                detectionThreshold: detectionStats.threshold,
                                envelopeMedian: detectionStats.envelopeMedian,
                                envelopeP95: detectionStats.envelopeP95,
@@ -247,38 +308,9 @@ enum WatchDSP {
                                routeWarning: routeWarning)
     }
 
-    private struct AudioStats {
-        let rmsLevel: Double
-        let peakLevel: Double
-        let clippingRatio: Double
-
-        static let empty = AudioStats(rmsLevel: 0, peakLevel: 0, clippingRatio: 0)
-    }
-
     private static func expectedTickCount(sampleCount: Int, sampleRate: Double, expectedPeriod: Double) -> Int {
         guard sampleRate > 0, expectedPeriod > 0 else { return 0 }
         return max(0, Int((Double(sampleCount) / sampleRate / expectedPeriod).rounded()))
-    }
-
-    private static func audioStats(_ input: [Float]) -> AudioStats {
-        guard !input.isEmpty else { return .empty }
-
-        var sumSquares = 0.0
-        var peak = 0.0
-        var clipped = 0
-
-        for sample in input {
-            let value = Double(abs(sample))
-            sumSquares += value * value
-            peak = max(peak, value)
-            if value >= 0.98 {
-                clipped += 1
-            }
-        }
-
-        return AudioStats(rmsLevel: sqrt(sumSquares / Double(input.count)),
-                          peakLevel: peak,
-                          clippingRatio: Double(clipped) / Double(input.count))
     }
 
     private static func preprocess(_ input: [Float], sampleRate: Double) -> [Float] {
@@ -288,17 +320,21 @@ enum WatchDSP {
         var output = [Float]()
         output.reserveCapacity(input.count)
 
-        // DC removal plus transient emphasis keeps low-frequency handling noise from driving detection.
+        // DC removal, rumble suppression, and transient emphasis keep handling noise from driving detection.
         var previous: Float = input[0] - mean
         var hp: Float = 0
         var previousHP: Float = 0
-        let alpha: Float = 0.995
+        let cutoff = max(40.0, min(180.0, sampleRate / 600.0))
+        let dt = 1.0 / sampleRate
+        let rc = 1.0 / (2.0 * Double.pi * cutoff)
+        let alpha = Float(rc / (rc + dt))
 
         for raw in input {
             let x = raw - mean
             hp = alpha * (hp + x - previous)
             previous = x
-            let transient = hp - previousHP * 0.72
+            let derivative = hp - previousHP
+            let transient = hp * 0.35 + derivative * 0.90
             previousHP = hp
             output.append(transient)
         }
@@ -321,6 +357,30 @@ enum WatchDSP {
         }
         absSignal.removeAll()
         return envelope
+    }
+
+    private static func normalizeEnvelope(_ envelope: [Float], sampleRate: Double) -> [Float] {
+        guard !envelope.isEmpty else { return [] }
+
+        let shortNoise = movingAverage(envelope, window: max(16, Int(sampleRate * 0.08)))
+        let longNoise = movingAverage(envelope, window: max(16, Int(sampleRate * 0.75)))
+        var absoluteDeviation = Array(repeating: Float(0), count: envelope.count)
+        for index in envelope.indices {
+            absoluteDeviation[index] = abs(envelope[index] - shortNoise[index])
+        }
+        let localDeviation = movingAverage(absoluteDeviation, window: max(16, Int(sampleRate * 0.12)))
+        var normalized = Array(repeating: Float(0), count: envelope.count)
+
+        for index in envelope.indices {
+            let floor = max(shortNoise[index] * 0.60 + longNoise[index] * 0.40, 0.000_000_001)
+            let lift = max(envelope[index] - floor, 0)
+            let deviation = max(localDeviation[index], floor * 0.05, 0.000_000_001)
+            let ratio = envelope[index] / floor
+            let localLift = 1 + lift / deviation * 0.45
+            normalized[index] = max(ratio, localLift)
+        }
+
+        return normalized
     }
 
     private struct PeakDetectionResult {
@@ -348,6 +408,7 @@ enum WatchDSP {
         let detection: PeakDetectionResult
         let fit: FitResult
         let periodicityScore: Double
+        let selectionScore: Double
     }
 
     private static let thresholdScales: [Float] = [1.0, 0.85, 0.70, 0.55, 0.40]
@@ -373,11 +434,16 @@ enum WatchDSP {
             let score = periodicityScore(candidateCount: detection.stats.candidatePeakCount,
                                          expectedTickCount: expectedTickCount,
                                          fit: fit)
+            let selectionScore = detectionSelectionScore(candidateCount: detection.stats.candidatePeakCount,
+                                                         expectedTickCount: expectedTickCount,
+                                                         fit: fit,
+                                                         periodicityScore: score)
             let selected = SelectedDetection(detection: detection,
                                              fit: fit,
-                                             periodicityScore: score)
+                                             periodicityScore: score,
+                                             selectionScore: selectionScore)
 
-            if best == nil || selected.periodicityScore > best!.periodicityScore {
+            if best == nil || selected.selectionScore > best!.selectionScore {
                 best = selected
             }
         }
@@ -524,42 +590,115 @@ enum WatchDSP {
         return max(0, min(1, score))
     }
 
+    private static func detectionSelectionScore(
+        candidateCount: Int,
+        expectedTickCount: Int,
+        fit: FitResult,
+        periodicityScore: Double
+    ) -> Double {
+        let countMatch = candidateCountMatch(candidatePeakCount: candidateCount,
+                                             expectedTickCount: expectedTickCount)
+        let outlierScore = max(0, 1 - fit.outlierRatio)
+        let stabilityScore: Double
+        if fit.windowRates.count >= 3 {
+            let mean = fit.windowRates.reduce(0, +) / Double(fit.windowRates.count)
+            let variance = fit.windowRates.map { pow($0 - mean, 2) }.reduce(0, +) / Double(fit.windowRates.count)
+            stabilityScore = max(0, 1 - sqrt(variance) / 15.0)
+        } else {
+            stabilityScore = fit.validCount >= max(80, Int(Double(max(expectedTickCount, 1)) * 0.65)) ? 0.70 : 0.35
+        }
+
+        let recallEstimate = tickRecallEstimate(validPeaks: fit.validCount,
+                                                expectedTickCount: expectedTickCount)
+        let score = fit.beatCoverage * 0.55
+            + recallEstimate * 0.25
+            + countMatch * 0.05
+            + periodicityScore * 0.10
+            + outlierScore * 0.03
+            + stabilityScore * 0.02
+        return max(0, min(1, score))
+    }
+
+    private static func candidateCountMatch(candidatePeakCount: Int, expectedTickCount: Int) -> Double {
+        let expected = max(expectedTickCount, 1)
+        return max(0, 1 - abs(Double(candidatePeakCount - expected)) / Double(expected))
+    }
+
+    private static func hasConfidentCoverage(
+        beatCoverage: Double,
+        candidatePeakCount: Int,
+        validPeakCount: Int,
+        expectedTickCount: Int
+    ) -> Bool {
+        if beatCoverage >= 0.80 {
+            return true
+        }
+        if expectedTickCount > 0,
+           beatCoverage >= 0.70,
+           Double(validPeakCount) / Double(expectedTickCount) >= 0.70 {
+            return true
+        }
+        return beatCoverage >= 0.75
+            && candidateCountMatch(candidatePeakCount: candidatePeakCount, expectedTickCount: expectedTickCount) >= 0.80
+    }
+
     private struct FitResult {
         let period: Double
         let validCount: Int
         let beatCoverage: Double
         let outlierRatio: Double
         let windowRates: [Double]
+        let analysisWindowCount: Int
+        let successfulWindowCount: Int
     }
 
     private static func robustFit(peaks: [Double], selectedBPH: Int) -> FitResult? {
         guard peaks.count > 50 else { return nil }
 
         let expectedPeriod = 3600.0 / Double(selectedBPH)
-        let first = peaks[0]
+        let sortedPeaks = peaks.sorted()
+        let tolerance = max(expectedPeriod * 0.22, 0.014)
 
-        // Assign beat indices using expected period. This is simple but effective for MVP.
-        var pairs: [(n: Double, t: Double)] = []
-        pairs.reserveCapacity(peaks.count)
+        var bestAssignment: GridAssignment?
+        var bestScore = -Double.infinity
 
-        var usedIndices = Set<Int>()
-        for t in peaks {
-            let n = Int(round((t - first) / expectedPeriod))
-            guard n >= 0, !usedIndices.contains(n) else { continue }
-            usedIndices.insert(n)
-            pairs.append((Double(n), t))
+        for phase in phaseCandidates(peaks: sortedPeaks, period: expectedPeriod) {
+            let assignment = assignPeaksToGrid(peaks: sortedPeaks,
+                                               phase: phase,
+                                               period: expectedPeriod,
+                                               tolerance: tolerance)
+            guard assignment.pairs.count > 50 else { continue }
+
+            let coverage = beatCoverage(for: assignment.pairs)
+            let countScore = min(1, Double(assignment.pairs.count) / Double(max(peaks.count, 1)))
+            let residualScore = max(0, 1 - assignment.medianResidual / tolerance)
+            let score = coverage * 0.60 + countScore * 0.25 + residualScore * 0.15
+
+            if score > bestScore {
+                bestScore = score
+                bestAssignment = assignment
+            }
         }
 
+        guard var pairs = bestAssignment?.pairs else { return nil }
         guard pairs.count > 50 else { return nil }
 
         var slope = linearRegressionSlope(pairs: pairs) ?? expectedPeriod
-        var intercept = first
+        var intercept = linearRegressionIntercept(pairs: pairs, slope: slope) ?? pairs[0].t
 
-        for _ in 0..<3 {
+        for _ in 0..<4 {
+            let reassigned = assignPeaksToGrid(peaks: sortedPeaks,
+                                               phase: intercept,
+                                               period: slope,
+                                               tolerance: max(expectedPeriod * 0.20, 0.012))
+            if reassigned.pairs.count > 50 {
+                pairs = reassigned.pairs
+            }
+
             var residuals = pairs.map { abs($0.t - (intercept + slope * $0.n)) }
             residuals.sort()
             let medianResidual = residuals[residuals.count / 2]
-            let threshold = max(medianResidual * 4, expectedPeriod * 0.12)
+            let threshold = max(medianResidual * 3.5, expectedPeriod * 0.10)
 
             let filtered = pairs.filter { abs($0.t - (intercept + slope * $0.n)) <= threshold }
             guard filtered.count > 50 else { break }
@@ -574,14 +713,109 @@ enum WatchDSP {
 
         let outlierRatio = 1.0 - Double(pairs.count) / Double(peaks.count)
         let beatCoverage = beatCoverage(for: pairs)
-        let windowRates = windowRateEstimates(pairs: pairs, selectedBPH: selectedBPH)
+        let windowSummary = windowRateEstimates(pairs: pairs, selectedBPH: selectedBPH)
 
         guard slope > 0 else { return nil }
         return FitResult(period: slope,
                          validCount: pairs.count,
                          beatCoverage: beatCoverage,
                          outlierRatio: max(0, min(1, outlierRatio)),
-                         windowRates: windowRates)
+                         windowRates: windowSummary.rates,
+                         analysisWindowCount: windowSummary.analysisWindowCount,
+                         successfulWindowCount: windowSummary.successfulWindowCount)
+    }
+
+    private struct GridAssignment {
+        let pairs: [(n: Double, t: Double)]
+        let medianResidual: Double
+    }
+
+    private static func phaseCandidates(peaks: [Double], period: Double) -> [Double] {
+        guard period > 0 else { return [] }
+
+        let sampledPeaks = Array(peaks.prefix(300))
+        let binCount = 32
+        var bins = Array(repeating: 0, count: binCount)
+        var phasesByBin = Array(repeating: [Double](), count: binCount)
+
+        for peak in sampledPeaks {
+            let phase = normalizedPhase(peak, period: period)
+            let bin = min(binCount - 1, Int((phase / period) * Double(binCount)))
+            bins[bin] += 1
+            if phasesByBin[bin].count < 12 {
+                phasesByBin[bin].append(phase)
+            }
+        }
+
+        let topBins = bins.enumerated()
+            .sorted { lhs, rhs in lhs.element > rhs.element }
+            .prefix(8)
+
+        var candidates: [Double] = []
+        for bin in topBins {
+            candidates.append((Double(bin.offset) + 0.5) / Double(binCount) * period)
+            candidates.append(contentsOf: phasesByBin[bin.offset])
+        }
+        candidates.append(contentsOf: sampledPeaks.prefix(30).map { normalizedPhase($0, period: period) })
+
+        var uniqueCandidates: [Double] = []
+        let uniquenessTolerance = period / 400
+        for candidate in candidates {
+            if !uniqueCandidates.contains(where: { circularDistance($0, candidate, period: period) < uniquenessTolerance }) {
+                uniqueCandidates.append(candidate)
+            }
+        }
+        return uniqueCandidates
+    }
+
+    private static func assignPeaksToGrid(
+        peaks: [Double],
+        phase: Double,
+        period: Double,
+        tolerance: Double
+    ) -> GridAssignment {
+        guard period > 0, tolerance > 0 else {
+            return GridAssignment(pairs: [], medianResidual: .infinity)
+        }
+
+        var bestBySlot: [Int: (time: Double, residual: Double)] = [:]
+
+        for peak in peaks {
+            let slot = Int(round((peak - phase) / period))
+            guard slot >= 0 else { continue }
+
+            let predicted = phase + Double(slot) * period
+            let residual = abs(peak - predicted)
+            guard residual <= tolerance else { continue }
+
+            if let existing = bestBySlot[slot] {
+                if residual < existing.residual {
+                    bestBySlot[slot] = (time: peak, residual: residual)
+                }
+            } else {
+                bestBySlot[slot] = (time: peak, residual: residual)
+            }
+        }
+
+        let sortedSlots = bestBySlot.keys.sorted()
+        let pairs = sortedSlots.map { slot in
+            (n: Double(slot), t: bestBySlot[slot]!.time)
+        }
+        var residuals = sortedSlots.map { bestBySlot[$0]!.residual }.sorted()
+        let medianResidual = residuals.isEmpty ? .infinity : residuals[residuals.count / 2]
+        residuals.removeAll()
+
+        return GridAssignment(pairs: pairs, medianResidual: medianResidual)
+    }
+
+    private static func normalizedPhase(_ value: Double, period: Double) -> Double {
+        let phase = value.truncatingRemainder(dividingBy: period)
+        return phase >= 0 ? phase : phase + period
+    }
+
+    private static func circularDistance(_ lhs: Double, _ rhs: Double, period: Double) -> Double {
+        let distance = abs(lhs - rhs)
+        return min(distance, max(0, period - distance))
     }
 
     private static func beatCoverage(for pairs: [(n: Double, t: Double)]) -> Double {
@@ -616,27 +850,46 @@ enum WatchDSP {
         return meanT - slope * meanN
     }
 
-    private static func windowRateEstimates(pairs: [(n: Double, t: Double)], selectedBPH: Int) -> [Double] {
-        guard pairs.count > 100 else { return [] }
+    private struct WindowRateSummary {
+        let rates: [Double]
+        let analysisWindowCount: Int
+        let successfulWindowCount: Int
+    }
+
+    private static func windowRateEstimates(pairs: [(n: Double, t: Double)], selectedBPH: Int) -> WindowRateSummary {
+        guard pairs.count > 100 else {
+            return WindowRateSummary(rates: [],
+                                     analysisWindowCount: pairs.count > 50 ? 1 : 0,
+                                     successfulWindowCount: 0)
+        }
+
         let windowSize = 80
         let step = 40
         var rates: [Double] = []
+        var analysisWindowCount = 0
+        var successfulWindowCount = 0
         var start = 0
 
-        while start + windowSize < pairs.count {
+        while start + windowSize <= pairs.count {
+            analysisWindowCount += 1
             let window = Array(pairs[start..<(start + windowSize)])
             if let slope = linearRegressionSlope(pairs: window), slope > 0 {
                 let detectedBPH = 3600.0 / slope
                 let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
                 rates.append(rate)
+                successfulWindowCount += 1
             }
             start += step
         }
-        return rates
+
+        return WindowRateSummary(rates: rates,
+                                 analysisWindowCount: analysisWindowCount,
+                                 successfulWindowCount: successfulWindowCount)
     }
 
     private static func qualityScore(
         validPeaks: Int,
+        candidatePeakCount: Int,
         expectedTickCount: Int,
         beatCoverage: Double,
         outlierRatio: Double,
@@ -662,13 +915,86 @@ enum WatchDSP {
             + outlierScore * 0.20
             + stabilityScore * 0.20
             + periodicityComponent * 0.35
-        let periodicityPenalty = max(0, min(1, (periodicityScore - 0.45) / 0.35))
+        let periodicityPenalty = max(0, min(1, (periodicityScore - 0.40) / 0.30))
         let coveragePenalty = beatCoverage >= 0.70 ? 1 : max(0, beatCoverage / 0.70)
         let score = max(0, min(100, baseScore * periodicityPenalty * coveragePenalty))
-        if beatCoverage < 0.80 {
+        if !hasConfidentCoverage(beatCoverage: beatCoverage,
+                                 candidatePeakCount: candidatePeakCount,
+                                 validPeakCount: validPeaks,
+                                 expectedTickCount: expectedTickCount) {
             return min(score, 49)
         }
         return score
+    }
+
+    private static func tickRecallEstimate(validPeaks: Int, expectedTickCount: Int) -> Double {
+        guard expectedTickCount > 0 else { return 0 }
+        return min(1, Double(validPeaks) / Double(expectedTickCount))
+    }
+
+    private static func recognitionConfidence(
+        qualityScore: Double,
+        beatCoverage: Double,
+        tickRecallEstimate: Double,
+        periodicityScore: Double
+    ) -> Double {
+        let score = qualityScore / 100
+        let confidence = score * 0.35
+            + beatCoverage * 0.25
+            + tickRecallEstimate * 0.20
+            + periodicityScore * 0.20
+        return max(0, min(1, confidence))
+    }
+
+    private static func dominantFailureReason(
+        quality: SignalQuality,
+        audioStats: AudioLevelStats,
+        detectionStats: PeakDetectionStats,
+        fit: FitResult,
+        expectedTickCount: Int,
+        routeWarning: String?
+    ) -> RecognitionIssue? {
+        guard quality == .low else { return nil }
+
+        if routeWarning != nil {
+            return .unsupportedRoute
+        }
+        if audioStats.clippingRatio > 0.001 {
+            return .clipping
+        }
+        if audioStats.peakLevel < 0.002 || detectionStats.candidatePeakCount == 0 {
+            return .tooQuiet
+        }
+        if detectionStats.estimatedSnrDb < 3 {
+            return .tooNoisy
+        }
+        if expectedTickCount > 0,
+           fit.beatCoverage < 0.70,
+           candidateCountMatch(candidatePeakCount: detectionStats.candidatePeakCount,
+                               expectedTickCount: expectedTickCount) < 0.65 {
+            return .wrongBPHLikely
+        }
+        return .unstableGrid
+    }
+
+    private static func fallbackFailureReason(
+        audioStats: AudioLevelStats,
+        detectionStats: PeakDetectionStats,
+        routeWarning: String?
+    ) -> RecognitionIssue {
+        if routeWarning != nil {
+            return .unsupportedRoute
+        }
+        if audioStats.clippingRatio > 0.001 {
+            return .clipping
+        }
+        if audioStats.peakLevel < 0.002 || detectionStats.candidatePeakCount == 0 {
+            return .tooQuiet
+        }
+        if detectionStats.estimatedSnrDb < 3 {
+            return .tooNoisy
+        }
+        return .unstableGrid
     }
 }
 

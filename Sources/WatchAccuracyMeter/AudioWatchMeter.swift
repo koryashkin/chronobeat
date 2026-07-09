@@ -6,6 +6,7 @@ protocol WatchAudioMetering: AnyObject, Sendable {
     var routeDescription: String { get }
     var routeWarning: String? { get }
     var capturedSampleCount: Int { get }
+    var latestLevels: AudioLevelStats { get }
 
     func requestPermissionIfNeeded() async throws
     func start(liveLevel: @escaping (Float) -> Void) throws
@@ -18,6 +19,7 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
     private var engine: AVAudioEngine?
     private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
+    private var storedLatestLevels: AudioLevelStats = .empty
     private var lastLiveLevelDeliveryTime: TimeInterval = 0
 
     private(set) var actualSampleRate: Double = 48_000
@@ -25,6 +27,13 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
     private(set) var routeWarning: String?
 
     private let liveLevelMinimumInterval: TimeInterval = 0.1
+
+    var latestLevels: AudioLevelStats {
+        lock.lock()
+        let levels = storedLatestLevels
+        lock.unlock()
+        return levels
+    }
 
     var capturedSampleCount: Int {
         lock.lock()
@@ -60,7 +69,9 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         try session.setCategory(.record, mode: .measurement, options: [])
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
+        configurePreferredBuiltInInput(for: session)
         try session.setActive(true)
+        configurePreferredBuiltInInput(for: session)
 
         actualSampleRate = session.sampleRate
         updateRouteInfo(from: session)
@@ -104,6 +115,8 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
         let channelCount = max(1, Int(buffer.format.channelCount))
         var sumSquares: Float = 0
+        var peak: Float = 0
+        var clipped = 0
 
         lock.lock()
         for i in 0..<frameLength {
@@ -114,6 +127,11 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             let value = mixedValue / Float(channelCount)
             samples.append(value)
             sumSquares += value * value
+            let magnitude = abs(value)
+            peak = max(peak, magnitude)
+            if magnitude >= 0.98 {
+                clipped += 1
+            }
         }
 
         let now = ProcessInfo.processInfo.systemUptime
@@ -121,10 +139,13 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         if shouldDeliverLiveLevel {
             lastLiveLevelDeliveryTime = now
         }
+        let levels = AudioLevelStats(rmsLevel: Double(sqrt(sumSquares / Float(frameLength))),
+                                     peakLevel: Double(peak),
+                                     clippingRatio: Double(clipped) / Double(frameLength))
+        storedLatestLevels = levels
         lock.unlock()
 
-        let rms = sqrt(sumSquares / Float(frameLength))
-        let normalizedLevel = min(1, rms * 50)
+        let normalizedLevel = min(1, Float(levels.rmsLevel) * 50)
         if shouldDeliverLiveLevel {
             liveLevel(normalizedLevel)
         }
@@ -136,7 +157,32 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         if let capacity {
             samples.reserveCapacity(capacity)
         }
+        storedLatestLevels = .empty
         lock.unlock()
+    }
+
+    private func configurePreferredBuiltInInput(for session: AVAudioSession) {
+        guard let builtInInput = session.availableInputs?.first(where: { $0.portType == .builtInMic }) else {
+            return
+        }
+
+        if let dataSource = preferredDataSource(for: builtInInput) {
+            try? builtInInput.setPreferredDataSource(dataSource)
+        }
+        try? session.setPreferredInput(builtInInput)
+    }
+
+    private func preferredDataSource(for input: AVAudioSessionPortDescription) -> AVAudioSessionDataSourceDescription? {
+        guard let dataSources = input.dataSources, !dataSources.isEmpty else { return nil }
+
+        let preferredNames = ["bottom", "back", "front"]
+        for preferredName in preferredNames {
+            if let match = dataSources.first(where: { $0.dataSourceName.localizedCaseInsensitiveContains(preferredName) }) {
+                return match
+            }
+        }
+
+        return dataSources.first
     }
 
     private func updateRouteInfo(from session: AVAudioSession) {
@@ -147,7 +193,12 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             return
         }
 
-        routeDescription = "\(primaryInput.portName) (\(primaryInput.portType.rawValue))"
+        let dataSourceName = primaryInput.selectedDataSource?.dataSourceName
+        if let dataSourceName {
+            routeDescription = "\(primaryInput.portName) \(dataSourceName) (\(primaryInput.portType.rawValue))"
+        } else {
+            routeDescription = "\(primaryInput.portName) (\(primaryInput.portType.rawValue))"
+        }
 
         if primaryInput.portType == .builtInMic {
             routeWarning = nil
