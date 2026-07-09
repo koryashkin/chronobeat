@@ -207,6 +207,21 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
     }
 
+    func testTudorGMTFixtureAutoDetectsNoisyBeatRate() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor GMT fixture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.78)
+        XCTAssertGreaterThanOrEqual(result.periodicityScore, 0.55)
+        XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
+    }
+
     func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
         let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
         let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
@@ -240,7 +255,8 @@ final class WatchDSPTests: XCTestCase {
     func testRealFixtureBenchmarkWindowsMeetRecognitionGate() throws {
         let fixtureSpecs = [
             LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH),
-            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH)
+            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH),
+            LabeledFixture(name: "tudor-gmt-28800-40-60s", bph: selectedBPH)
         ]
         var outcomes: [FixtureWindowOutcome] = []
 

@@ -200,25 +200,33 @@ enum WatchDSP {
                             isAutoBPH: true)
         }
 
-        let bestScore = autoBeatRateScore(best)
+        let verifiedBest = analyze(samples: samples,
+                                   sampleRate: sampleRate,
+                                   selectedBPH: best.selectedBPH,
+                                   routeDescription: routeDescription,
+                                   routeWarning: routeWarning,
+                                   checksCompetingBeatRates: true,
+                                   isAutoBPH: true)
+        let bestScore = max(autoBeatRateScore(best), autoBeatRateScore(verifiedBest))
         let secondScore = sortedCandidates.dropFirst().first.map(autoBeatRateScore) ?? 0
         let margin = bestScore - secondScore
-        let isAmbiguous = best.quality == .low
+        let hasUsableGrid = hasUsableAutoGrid(verifiedBest)
+        let isAmbiguous = verifiedBest.quality == .low
             || bestScore < 0.58
-            || margin < 0.06
-            || best.outlierRatio > 0.60
-            || best.periodicityScore < 0.50
+            || (!hasUsableGrid && margin < 0.06)
+            || verifiedBest.outlierRatio > 0.62
+            || verifiedBest.periodicityScore < 0.50
 
         if isAmbiguous {
-            return replacing(result: best,
+            return replacing(result: verifiedBest,
                              quality: .low,
-                             qualityScore: min(best.qualityScore, 49),
-                             recognitionConfidence: min(best.recognitionConfidence, 0.49),
+                             qualityScore: min(verifiedBest.qualityScore, 49),
+                             recognitionConfidence: min(verifiedBest.recognitionConfidence, 0.49),
                              dominantFailureReason: .ambiguousBeatRate,
                              isAutoBPH: true)
         }
 
-        return replacing(result: best, isAutoBPH: true)
+        return replacing(result: verifiedBest, isAutoBPH: true)
     }
 
     static func analyze(
@@ -1173,6 +1181,14 @@ enum WatchDSP {
             + candidateMatch * 0.12
             + max(0, 1 - result.outlierRatio) * 0.08
         return max(0, min(1, score))
+    }
+
+    private static func hasUsableAutoGrid(_ result: WatchMeasurementResult) -> Bool {
+        result.quality != .low
+            && result.beatCoverage >= 0.78
+            && result.tickRecallEstimate >= 0.75
+            && result.periodicityScore >= 0.55
+            && result.outlierRatio <= 0.58
     }
 
     private static func replacing(
