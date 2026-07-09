@@ -11,8 +11,8 @@ struct ContentView: View {
                     header
 
                     Picker("Beat rate", selection: $viewModel.selectedBPH) {
-                        ForEach(BeatRate.allCases) { rate in
-                            Text(rate.label).tag(rate)
+                        ForEach(BeatRateSelection.allCases) { selection in
+                            Text(selection.label).tag(selection)
                         }
                     }
                     .pickerStyle(.menu)
@@ -166,7 +166,12 @@ struct ResultView: View {
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Selected beat rate: \(result.selectedBPH) bph")
+                if result.isAutoBPH {
+                    Text("Beat rate mode: Auto")
+                    Text("Detected beat rate: \(result.selectedBPH.formatted()) bph")
+                } else {
+                    Text("Selected beat rate: \(result.selectedBPH.formatted()) bph")
+                }
                 if result.quality != .low {
                     Text("Measured beat rate: \(String(format: "%.1f", result.detectedBPH)) bph")
                 }

@@ -87,6 +87,7 @@ enum AudioCaptureExporter {
                                       routeWarning: capture.routeWarning,
                                       captureLevels: capture.levels,
                                       selectedBPH: result.selectedBPH,
+                                      isAutoBPH: result.isAutoBPH,
                                       detectedBPH: result.detectedBPH,
                                       rateSecondsPerDay: result.rateSecondsPerDay,
                                       quality: result.quality.rawValue,
@@ -141,6 +142,7 @@ private struct ExportManifest: Codable {
     let routeWarning: String?
     let captureLevels: AudioLevelStats
     let selectedBPH: Int
+    let isAutoBPH: Bool
     let detectedBPH: Double
     let rateSecondsPerDay: Double
     let quality: String
