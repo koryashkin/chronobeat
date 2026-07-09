@@ -153,6 +153,96 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.chosenThresholdScale, 1.0)
     }
 
+    func testKingSeikoFixtureRejectsWrongBeatRate() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: BeatRate.bph21600.rawValue,
+                                      routeDescription: "King Seiko fixture")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertLessThan(result.qualityScore, 50)
+    }
+
+    func testRealFixtureBenchmarkWindowsMeetRecognitionGate() throws {
+        let fixtureSpecs = [
+            LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH)
+        ]
+        var outcomes: [FixtureWindowOutcome] = []
+
+        for spec in fixtureSpecs {
+            let fixture = try loadFixture(named: spec.name)
+            for window in fixtureWindows(samples: fixture.samples,
+                                         sampleRate: fixture.sampleRate,
+                                         duration: 20,
+                                         hop: 5) {
+                let result = WatchDSP.analyze(samples: window.samples,
+                                              sampleRate: fixture.sampleRate,
+                                              selectedBPH: spec.bph,
+                                              routeDescription: spec.name)
+                let passed = result.quality != .low
+                    && result.beatCoverage >= 0.70
+                    && result.periodicityScore >= 0.50
+                outcomes.append(FixtureWindowOutcome(fixtureName: spec.name,
+                                                     start: window.start,
+                                                     result: result,
+                                                     passed: passed))
+            }
+        }
+
+        XCTAssertFalse(outcomes.isEmpty)
+        let successCount = outcomes.filter(\.passed).count
+        let successRate = Double(successCount) / Double(outcomes.count)
+        if outcomes.count >= 30 {
+            XCTAssertGreaterThanOrEqual(successRate, 0.90)
+        } else {
+            XCTAssertEqual(successCount, outcomes.count, "All available real fixture windows should pass until the 30-window 90% gate is populated.")
+        }
+    }
+
+    func testDebugCaptureExportWritesWAVAndDiagnosticsJSON() throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5, duration: 12)
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Synthetic microphone",
+                                   routeWarning: nil,
+                                   capturedAt: Date(timeIntervalSince1970: 1_725_000_000))
+        let result = WatchDSP.analyze(capture: capture, selectedBPH: selectedBPH)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("WatchAccuracyExportTests-\(UUID().uuidString)", isDirectory: true)
+
+        let export = try AudioCaptureExporter.export(capture: capture,
+                                                     result: result,
+                                                     directory: directory)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: export.audioURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: export.diagnosticsURL.path))
+
+        let exportedAudio = try AVAudioFile(forReading: export.audioURL)
+        XCTAssertEqual(Int(exportedAudio.length), samples.count)
+        XCTAssertEqual(exportedAudio.processingFormat.sampleRate, sampleRate, accuracy: 0.1)
+
+        let json = try JSONSerialization.jsonObject(with: Data(contentsOf: export.diagnosticsURL)) as? [String: Any]
+        XCTAssertEqual(json?["audioFileName"] as? String, "capture.wav")
+        XCTAssertEqual(json?["selectedBPH"] as? Int, selectedBPH)
+        XCTAssertEqual(json?["routeDescription"] as? String, "Synthetic microphone")
+        XCTAssertNotNil(json?["recognitionConfidence"])
+
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testAudioCaptureComputesLevelDiagnostics() {
+        let capture = AudioCapture(samples: [0, 0.5, -1, 1],
+                                   sampleRate: 4,
+                                   routeDescription: "Synthetic")
+
+        XCTAssertEqual(capture.duration, 1, accuracy: 0.001)
+        XCTAssertEqual(capture.levels.peakLevel, 1, accuracy: 0.001)
+        XCTAssertEqual(capture.levels.clippingRatio, 0.5, accuracy: 0.001)
+        XCTAssertGreaterThan(capture.levels.rmsLevel, 0.70)
+    }
+
     func testQuietSyntheticWatchWithWhiteNoiseStillFindsGrid() {
         var samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5,
                                                 duration: 30,
@@ -334,6 +424,44 @@ final class WatchDSPTests: XCTestCase {
         return (samples, format.sampleRate)
     }
 
+    private struct LabeledFixture {
+        let name: String
+        let bph: Int
+    }
+
+    private struct FixtureWindow {
+        let start: Double
+        let samples: [Float]
+    }
+
+    private struct FixtureWindowOutcome {
+        let fixtureName: String
+        let start: Double
+        let result: WatchMeasurementResult
+        let passed: Bool
+    }
+
+    private func fixtureWindows(samples: [Float],
+                                sampleRate: Double,
+                                duration: Double,
+                                hop: Double) -> [FixtureWindow] {
+        let windowSize = Int((duration * sampleRate).rounded())
+        let hopSize = max(1, Int((hop * sampleRate).rounded()))
+        guard windowSize > 0, samples.count > windowSize else {
+            return [FixtureWindow(start: 0, samples: samples)]
+        }
+
+        var windows: [FixtureWindow] = []
+        var startIndex = 0
+        while startIndex + windowSize <= samples.count {
+            let endIndex = startIndex + windowSize
+            windows.append(FixtureWindow(start: Double(startIndex) / sampleRate,
+                                         samples: Array(samples[startIndex..<endIndex])))
+            startIndex += hopSize
+        }
+        return windows
+    }
+
     private func addWhiteNoise(to samples: inout [Float], amplitude: Float, seed: UInt64) {
         var generator = SeededRandom(seed: seed)
         for index in samples.indices {
@@ -406,7 +534,7 @@ final class MeasurementViewModelAudioTests: XCTestCase {
     private let selectedBPH = 28_800
 
     func testMeasurementCompletesWithInjectedAudioSamples() async throws {
-        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 11)
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 11, duration: 20)
         let audioMeter = FakeAudioMeter(samples: samples,
                                         sampleRate: sampleRate,
                                         routeDescription: "Synthetic microphone")
@@ -546,6 +674,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     var actualSampleRate: Double
     var routeDescription: String
     var routeWarning: String?
+    var latestLevels: AudioLevelStats = .empty
 
     private let samples: [Float]
     private let permissionError: Error?
@@ -582,6 +711,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     func start(liveLevel: @escaping (Float) -> Void) throws {
         startCallCount += 1
         hasStarted = true
+        latestLevels = AudioLevelStats(rmsLevel: 0.0084, peakLevel: 0.04, clippingRatio: 0)
         liveLevel(0.42)
     }
 
@@ -652,6 +782,11 @@ final class DomainModelTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: quality == .high ? 1 : 0,
+                               recognitionConfidence: quality == .high ? 1 : 0,
+                               tickRecallEstimate: quality == .high ? 1 : 0,
+                               analysisWindowCount: quality == .high ? 10 : 0,
+                               successfulWindowCount: quality == .high ? 10 : 0,
+                               dominantFailureReason: quality == .high ? nil : .unstableGrid,
                                detectionThreshold: 0.01,
                                envelopeMedian: 0.001,
                                envelopeP95: 0.01,
@@ -698,6 +833,11 @@ final class MeasurementStateTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: 1,
+                               recognitionConfidence: 1,
+                               tickRecallEstimate: 1,
+                               analysisWindowCount: 10,
+                               successfulWindowCount: 10,
+                               dominantFailureReason: nil,
                                detectionThreshold: 0.01,
                                envelopeMedian: 0.001,
                                envelopeP95: 0.01,

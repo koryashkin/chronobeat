@@ -12,6 +12,11 @@ final class MeasurementViewModel: ObservableObject {
     @Published var capturedSampleCount: Int = 0
     @Published var capturedAudioSeconds: Double = 0
     @Published var isReceivingAudio: Bool = false
+    @Published var liveRmsLevel: Double = 0
+    @Published var livePeakLevel: Double = 0
+    @Published var liveClippingRatio: Double = 0
+    @Published var latestExportURL: URL?
+    @Published var exportStatusText: String?
 
     var isMeasuring: Bool {
         state.isMeasuring
@@ -27,6 +32,8 @@ final class MeasurementViewModel: ObservableObject {
     private var measurementTask: Task<Void, Never>?
     private var lastObservedSampleCount = 0
     private var lastSampleGrowthDate = Date.distantPast
+    private var latestCapture: AudioCapture?
+    private var latestResult: WatchMeasurementResult?
 
     init(audioMeter: any WatchAudioMetering = AudioWatchMeter(),
          measurementDuration: TimeInterval = 60) {
@@ -96,6 +103,10 @@ final class MeasurementViewModel: ObservableObject {
         progress = 0
         liveLevelText = "0%"
         routeWarning = nil
+        latestExportURL = nil
+        exportStatusText = nil
+        latestCapture = nil
+        latestResult = nil
         resetCaptureStatus()
     }
 
@@ -110,22 +121,40 @@ final class MeasurementViewModel: ObservableObject {
         state = .analyzing
 
         let samples = audioMeter.stopAndReturnSamples()
-        let sampleRate = audioMeter.actualSampleRate
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: audioMeter.actualSampleRate,
+                                   routeDescription: audioMeter.routeDescription,
+                                   routeWarning: audioMeter.routeWarning)
         let selected = selectedBPH.rawValue
-        let routeDescription = audioMeter.routeDescription
-        let routeWarning = audioMeter.routeWarning
 
         let result = await Task.detached(priority: .userInitiated) {
-            WatchDSP.analyze(samples: samples,
-                             sampleRate: sampleRate,
-                             selectedBPH: selected,
-                             routeDescription: routeDescription,
-                             routeWarning: routeWarning)
+            WatchDSP.analyze(capture: capture, selectedBPH: selected)
         }.value
 
         guard !Task.isCancelled else { return }
+        latestCapture = capture
+        latestResult = result
+        latestExportURL = nil
+        exportStatusText = nil
         measurementTask = nil
         state = .result(result)
+    }
+
+    func exportLastMeasurement() {
+        guard let latestCapture, let latestResult else {
+            exportStatusText = "No measurement is available to export."
+            latestExportURL = nil
+            return
+        }
+
+        do {
+            let export = try AudioCaptureExporter.export(capture: latestCapture, result: latestResult)
+            latestExportURL = export.directoryURL
+            exportStatusText = "Debug capture exported."
+        } catch {
+            latestExportURL = nil
+            exportStatusText = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     private func startTimer() {
@@ -159,12 +188,18 @@ final class MeasurementViewModel: ObservableObject {
             ? Double(sampleCount) / audioMeter.actualSampleRate
             : 0
         isReceivingAudio = sampleCount > 0 && now.timeIntervalSince(lastSampleGrowthDate) < 0.75
+        liveRmsLevel = audioMeter.latestLevels.rmsLevel
+        livePeakLevel = audioMeter.latestLevels.peakLevel
+        liveClippingRatio = audioMeter.latestLevels.clippingRatio
     }
 
     private func resetCaptureStatus() {
         capturedSampleCount = 0
         capturedAudioSeconds = 0
         isReceivingAudio = false
+        liveRmsLevel = 0
+        livePeakLevel = 0
+        liveClippingRatio = 0
         lastObservedSampleCount = 0
         lastSampleGrowthDate = .distantPast
     }
