@@ -165,9 +165,54 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
+    func testRealDeviceBottomMicFixtureDetectsSelectedBeatRate() throws {
+        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "iPhone bottom mic fixture")
+
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.validPeakCount, 140)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
+    }
+
+    func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
+        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+        let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
+
+        for beatRate in wrongBeatRates {
+            let result = WatchDSP.analyze(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          selectedBPH: beatRate,
+                                          routeDescription: "iPhone bottom mic fixture")
+
+            XCTAssertEqual(result.quality, .low, "Expected \(beatRate) bph to be rejected.")
+            XCTAssertLessThan(result.qualityScore, 50)
+        }
+    }
+
+    func testHighBeatRateWatchCannotMasqueradeAsHalfRate() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0,
+                                                nominalBPH: BeatRate.bph36000.rawValue,
+                                                duration: 20)
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: BeatRate.bph18000.rawValue,
+                                      routeDescription: "Half-rate harmonic")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .wrongBPHLikely)
+        XCTAssertLessThan(result.qualityScore, 50)
+    }
+
     func testRealFixtureBenchmarkWindowsMeetRecognitionGate() throws {
         let fixtureSpecs = [
-            LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH)
+            LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH),
+            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH)
         ]
         var outcomes: [FixtureWindowOutcome] = []
 

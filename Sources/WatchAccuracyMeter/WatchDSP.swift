@@ -224,22 +224,38 @@ enum WatchDSP {
         } else {
             quality = .low
         }
+        let competition = beatRateCompetition(envelope: envelope,
+                                              sampleRate: sampleRate,
+                                              selectedBPH: selectedBPH,
+                                              expectedTickCount: expectedTickCount,
+                                              selectedDetection: selectedDetection,
+                                              preliminaryQuality: quality)
+        let finalQuality: SignalQuality
+        let finalQualityScore: Double
+        if competition.isLikelyWrongBeatRate {
+            finalQuality = .low
+            finalQualityScore = min(qualityScore, 49)
+        } else {
+            finalQuality = quality
+            finalQualityScore = qualityScore
+        }
         let recognitionConfidence = recognitionConfidence(qualityScore: qualityScore,
                                                           beatCoverage: fit.beatCoverage,
                                                           tickRecallEstimate: tickRecallEstimate,
                                                           periodicityScore: selectedDetection.periodicityScore)
-        let dominantIssue = dominantFailureReason(quality: quality,
+        let dominantIssue = dominantFailureReason(quality: finalQuality,
                                                   audioStats: audioStats,
                                                   detectionStats: detection.stats,
                                                   fit: fit,
                                                   expectedTickCount: expectedTickCount,
-                                                  routeWarning: routeWarning)
+                                                  routeWarning: routeWarning,
+                                                  forcedIssue: competition.isLikelyWrongBeatRate ? .wrongBPHLikely : nil)
 
         return WatchMeasurementResult(selectedBPH: selectedBPH,
                                       detectedBPH: detectedBPH,
                                       rateSecondsPerDay: rate,
-                                      qualityScore: qualityScore,
-                                      quality: quality,
+                                      qualityScore: finalQualityScore,
+                                      quality: finalQuality,
                                       detectedPeakCount: detection.stats.candidatePeakCount,
                                       validPeakCount: fit.validCount,
                                       expectedTickCount: expectedTickCount,
@@ -251,7 +267,7 @@ enum WatchDSP {
                                       clippingRatio: audioStats.clippingRatio,
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
-                                      recognitionConfidence: recognitionConfidence,
+                                      recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
                                       tickRecallEstimate: tickRecallEstimate,
                                       analysisWindowCount: fit.analysisWindowCount,
                                       successfulWindowCount: fit.successfulWindowCount,
@@ -619,6 +635,97 @@ enum WatchDSP {
         return max(0, min(1, score))
     }
 
+    private struct BeatRateCompetition {
+        let selectedScore: Double
+        let competingBPH: Int?
+        let competingScore: Double
+        let isLikelyWrongBeatRate: Bool
+
+        static func none(selectedScore: Double) -> BeatRateCompetition {
+            BeatRateCompetition(selectedScore: selectedScore,
+                                competingBPH: nil,
+                                competingScore: 0,
+                                isLikelyWrongBeatRate: false)
+        }
+    }
+
+    private static func beatRateCompetition(
+        envelope: [Float],
+        sampleRate: Double,
+        selectedBPH: Int,
+        expectedTickCount: Int,
+        selectedDetection: SelectedDetection,
+        preliminaryQuality: SignalQuality
+    ) -> BeatRateCompetition {
+        guard preliminaryQuality != .low else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        let selectedCandidateMatch = candidateCountMatch(candidatePeakCount: selectedDetection.detection.stats.candidatePeakCount,
+                                                        expectedTickCount: expectedTickCount)
+        let selectedLooksAmbiguous = preliminaryQuality == .medium
+            || selectedCandidateMatch < 0.85
+            || selectedDetection.fit.outlierRatio > 0.25
+            || selectedDetection.periodicityScore < 0.80
+        guard selectedLooksAmbiguous else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        var bestCompetingBPH: Int?
+        var bestCompetingDetection: SelectedDetection?
+
+        for beatRate in BeatRate.allCases where beatRate.rawValue != selectedBPH {
+            let candidatePeriod = 3600.0 / Double(beatRate.rawValue)
+            let candidateExpectedCount = Self.expectedTickCount(sampleCount: envelope.count,
+                                                                sampleRate: sampleRate,
+                                                                expectedPeriod: candidatePeriod)
+            guard let detection = bestDetection(envelope: envelope,
+                                                sampleRate: sampleRate,
+                                                selectedBPH: beatRate.rawValue,
+                                                expectedPeriod: candidatePeriod,
+                                                expectedTickCount: candidateExpectedCount) else {
+                continue
+            }
+            let competingCandidateMatch = candidateCountMatch(candidatePeakCount: detection.detection.stats.candidatePeakCount,
+                                                              expectedTickCount: candidateExpectedCount)
+            let competingCountIsPlausible = competingCandidateMatch >= 0.55
+                || competingCandidateMatch >= selectedCandidateMatch + 0.03
+            guard detection.fit.validCount >= 80,
+                  detection.fit.beatCoverage >= 0.70,
+                  detection.periodicityScore >= 0.50,
+                  competingCountIsPlausible else {
+                continue
+            }
+
+            if bestCompetingDetection == nil || detection.selectionScore > bestCompetingDetection!.selectionScore {
+                bestCompetingDetection = detection
+                bestCompetingBPH = beatRate.rawValue
+            }
+        }
+
+        guard let bestCompetingDetection, let bestCompetingBPH else {
+            return .none(selectedScore: selectedDetection.selectionScore)
+        }
+
+        let selectedScore = selectedDetection.selectionScore
+        let competingScore = bestCompetingDetection.selectionScore
+        let competitorIsMateriallyBetter = competingScore >= selectedScore + 0.06
+        let competitorIsCleaner = bestCompetingDetection.fit.outlierRatio + 0.10 < selectedDetection.fit.outlierRatio
+            || bestCompetingDetection.periodicityScore >= selectedDetection.periodicityScore + 0.08
+            || bestCompetingDetection.fit.beatCoverage >= selectedDetection.fit.beatCoverage + 0.08
+        let selectedIsNoisyOrAmbiguous = selectedDetection.fit.outlierRatio > 0.20
+            || selectedCandidateMatch < 0.85
+            || selectedDetection.periodicityScore < 0.80
+        let isLikelyWrong = competitorIsMateriallyBetter
+            && competitorIsCleaner
+            && selectedIsNoisyOrAmbiguous
+
+        return BeatRateCompetition(selectedScore: selectedScore,
+                                   competingBPH: bestCompetingBPH,
+                                   competingScore: competingScore,
+                                   isLikelyWrongBeatRate: isLikelyWrong)
+    }
+
     private static func candidateCountMatch(candidatePeakCount: Int, expectedTickCount: Int) -> Double {
         let expected = max(expectedTickCount, 1)
         return max(0, 1 - abs(Double(candidatePeakCount - expected)) / Double(expected))
@@ -952,10 +1059,14 @@ enum WatchDSP {
         detectionStats: PeakDetectionStats,
         fit: FitResult,
         expectedTickCount: Int,
-        routeWarning: String?
+        routeWarning: String?,
+        forcedIssue: RecognitionIssue? = nil
     ) -> RecognitionIssue? {
         guard quality == .low else { return nil }
 
+        if let forcedIssue {
+            return forcedIssue
+        }
         if routeWarning != nil {
             return .unsupportedRoute
         }
