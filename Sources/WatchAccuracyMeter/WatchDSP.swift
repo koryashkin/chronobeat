@@ -222,7 +222,7 @@ enum WatchDSP {
                              quality: .low,
                              qualityScore: min(verifiedBest.qualityScore, 49),
                              recognitionConfidence: min(verifiedBest.recognitionConfidence, 0.49),
-                             dominantFailureReason: .ambiguousBeatRate,
+                             dominantFailureReason: autoAmbiguityFailureReason(for: verifiedBest),
                              isAutoBPH: true)
         }
 
@@ -910,9 +910,15 @@ enum WatchDSP {
                 pairs = reassigned.pairs
             }
 
+            if let newSlope = linearRegressionSlope(pairs: pairs),
+               let newIntercept = linearRegressionIntercept(pairs: pairs, slope: newSlope) {
+                slope = newSlope
+                intercept = newIntercept
+            }
+
             var residuals = pairs.map { abs($0.t - (intercept + slope * $0.n)) }
             residuals.sort()
-            let medianResidual = residuals[residuals.count / 2]
+            let medianResidual = lowerMedian(sorted: residuals)
             let threshold = max(medianResidual * 3.5, expectedPeriod * 0.10)
 
             let filtered = pairs.filter { abs($0.t - (intercept + slope * $0.n)) <= threshold }
@@ -997,8 +1003,6 @@ enum WatchDSP {
 
         for peak in peaks {
             let slot = Int(round((peak - phase) / period))
-            guard slot >= 0 else { continue }
-
             let predicted = phase + Double(slot) * period
             let residual = abs(peak - predicted)
             guard residual <= tolerance else { continue }
@@ -1017,10 +1021,15 @@ enum WatchDSP {
             (n: Double(slot), t: bestBySlot[slot]!.time)
         }
         var residuals = sortedSlots.map { bestBySlot[$0]!.residual }.sorted()
-        let medianResidual = residuals.isEmpty ? .infinity : residuals[residuals.count / 2]
+        let medianResidual = residuals.isEmpty ? .infinity : lowerMedian(sorted: residuals)
         residuals.removeAll()
 
         return GridAssignment(pairs: pairs, medianResidual: medianResidual)
+    }
+
+    private static func lowerMedian(sorted values: [Double]) -> Double {
+        guard !values.isEmpty else { return .infinity }
+        return values[(values.count - 1) / 2]
     }
 
     private static func normalizedPhase(_ value: Double, period: Double) -> Double {
@@ -1162,8 +1171,11 @@ enum WatchDSP {
     }
 
     private static func autoBeatRateScore(_ result: WatchMeasurementResult) -> Double {
-        let candidateMatch = candidateCountMatch(candidatePeakCount: result.detectedPeakCount,
-                                                 expectedTickCount: result.expectedTickCount)
+        let fittedCountMatch = candidateCountMatch(candidatePeakCount: result.validPeakCount,
+                                                   expectedTickCount: result.expectedTickCount)
+        let rawCandidateCountMatch = candidateCountMatch(candidatePeakCount: result.detectedPeakCount,
+                                                         expectedTickCount: result.expectedTickCount)
+        let countMatch = fittedCountMatch * 0.80 + rawCandidateCountMatch * 0.20
         let qualityComponent: Double
         switch result.quality {
         case .high:
@@ -1178,9 +1190,21 @@ enum WatchDSP {
             + result.beatCoverage * 0.22
             + result.tickRecallEstimate * 0.18
             + result.periodicityScore * 0.18
-            + candidateMatch * 0.12
+            + countMatch * 0.12
             + max(0, 1 - result.outlierRatio) * 0.08
         return max(0, min(1, score))
+    }
+
+    private static func autoAmbiguityFailureReason(for result: WatchMeasurementResult) -> RecognitionIssue {
+        guard let dominantFailureReason = result.dominantFailureReason else {
+            return .ambiguousBeatRate
+        }
+
+        if dominantFailureReason == .unstableGrid {
+            return .ambiguousBeatRate
+        }
+
+        return dominantFailureReason
     }
 
     private static func hasUsableAutoGrid(_ result: WatchMeasurementResult) -> Bool {

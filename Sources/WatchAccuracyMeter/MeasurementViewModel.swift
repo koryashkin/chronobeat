@@ -34,6 +34,7 @@ final class MeasurementViewModel: ObservableObject {
     private var lastSampleGrowthDate = Date.distantPast
     private var latestCapture: AudioCapture?
     private var latestResult: WatchMeasurementResult?
+    private var measurementGeneration = 0
 
     init(audioMeter: any WatchAudioMetering = AudioWatchMeter(),
          measurementDuration: TimeInterval = 60) {
@@ -44,14 +45,16 @@ final class MeasurementViewModel: ObservableObject {
     func startMeasurement() {
         guard state.canEditBeatRate else { return }
         let selectedBPHForRun = selectedBPH
+        measurementGeneration += 1
+        let generation = measurementGeneration
 
         measurementTask?.cancel()
         measurementTask = Task { [weak self] in
-            await self?.runMeasurement(selectedBPH: selectedBPHForRun)
+            await self?.runMeasurement(selectedBPH: selectedBPHForRun, generation: generation)
         }
     }
 
-    private func runMeasurement(selectedBPH: BeatRateSelection) async {
+    private func runMeasurement(selectedBPH: BeatRateSelection, generation: Int) async {
         state = .requestingPermission
         routeWarning = nil
 
@@ -76,28 +79,39 @@ final class MeasurementViewModel: ObservableObject {
 
             try await Task.sleep(nanoseconds: UInt64(measurementDuration * 1_000_000_000))
             try Task.checkCancellation()
-            await finishMeasurement(selectedBPH: selectedBPH)
+            await finishMeasurement(selectedBPH: selectedBPH, generation: generation)
         } catch is CancellationError {
             cancelTimer()
-            audioMeter.stop()
+            if generation == measurementGeneration {
+                audioMeter.stop()
+            }
         } catch {
             cancelTimer()
-            audioMeter.stop()
-            state = .failed(error.localizedDescription)
+            if generation == measurementGeneration {
+                audioMeter.stop()
+                state = .failed(error.localizedDescription)
+            }
         }
     }
 
     func cancelMeasurement() {
+        measurementGeneration += 1
         measurementTask?.cancel()
         measurementTask = nil
         cancelTimer()
         audioMeter.stop()
-        reset()
+        resetState()
     }
 
     func reset() {
+        measurementGeneration += 1
         measurementTask?.cancel()
         measurementTask = nil
+        audioMeter.stop()
+        resetState()
+    }
+
+    private func resetState() {
         state = .idle
         elapsedSeconds = 0
         progress = 0
@@ -111,13 +125,24 @@ final class MeasurementViewModel: ObservableObject {
     }
 
     func stopForInactiveScene() {
-        guard state.requiresForegroundAudioSession else { return }
+        switch state {
+        case .idle, .result, .failed:
+            return
+        case .requestingPermission, .measuring, .analyzing:
+            break
+        }
         cancelMeasurement()
     }
 
-    private func finishMeasurement(selectedBPH: BeatRateSelection) async {
+    private func finishMeasurement(selectedBPH: BeatRateSelection, generation: Int) async {
         cancelTimer()
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, generation == measurementGeneration else {
+            if generation == measurementGeneration {
+                state = .idle
+                measurementTask = nil
+            }
+            return
+        }
         state = .analyzing
 
         let samples = audioMeter.stopAndReturnSamples()
@@ -135,7 +160,13 @@ final class MeasurementViewModel: ObservableObject {
             }
         }.value
 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, generation == measurementGeneration else {
+            if generation == measurementGeneration {
+                state = .idle
+                measurementTask = nil
+            }
+            return
+        }
         latestCapture = capture
         latestResult = result
         latestExportURL = nil

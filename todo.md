@@ -2,6 +2,17 @@
 
 > Full senior/architect review pass. Ranked by severity.
 
+## Progress
+
+### 2026-07-13
+
+Fixed on `codex/mvp-simulator-tests`:
+
+- Bugs: 1, 2, 3, 4, 5, 6, 7, 8.
+- Code quality / cleanup: 14, 15, 17.
+- Low priority / nice-to-have: 20.
+- Audio engineering: A7, A10.
+
 ---
 
 ## Bugs (correctness)

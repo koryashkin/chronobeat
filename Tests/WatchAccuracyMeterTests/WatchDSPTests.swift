@@ -143,6 +143,17 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
     }
 
+    func testAutoBPHPreservesTooQuietFailureReason() {
+        let samples = Array(repeating: Float(0), count: Int(sampleRate * 12))
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Auto silence")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .tooQuiet)
+    }
+
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
         let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
@@ -667,6 +678,7 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertEqual(viewModel.liveLevelText, "42%")
 
         viewModel.cancelMeasurement()
+        try await waitUntil { audioMeter.stopCallCount == 1 }
     }
 
     func testPermissionFailureDoesNotStartInjectedAudioMeter() async throws {
@@ -703,9 +715,29 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         try await waitUntil { viewModel.isMeasuring }
         viewModel.stopForInactiveScene()
 
+        try await waitUntil { audioMeter.stopCallCount == 1 }
         XCTAssertTrue(viewModel.canEditBeatRate)
         XCTAssertEqual(audioMeter.startCallCount, 1)
-        XCTAssertGreaterThanOrEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+    }
+
+    func testCancelStopsInjectedAudioOnlyOnce() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 5)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil { viewModel.isMeasuring }
+        viewModel.cancelMeasurement()
+
+        try await waitUntil { audioMeter.stopCallCount == 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(viewModel.canEditBeatRate)
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
     }
 
     private func makeSyntheticWatchSamples(
@@ -765,10 +797,17 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     var actualSampleRate: Double
     var routeDescription: String
     var routeWarning: String?
-    var latestLevels: AudioLevelStats = .empty
+    var latestLevels: AudioLevelStats {
+        lock.lock()
+        let levels = storedLatestLevels
+        lock.unlock()
+        return levels
+    }
 
+    private let lock = NSLock()
     private let samples: [Float]
     private let permissionError: Error?
+    private var storedLatestLevels: AudioLevelStats = .empty
     private var hasStarted = false
 
     private(set) var didRequestPermission = false
@@ -802,7 +841,9 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     func start(liveLevel: @escaping (Float) -> Void) throws {
         startCallCount += 1
         hasStarted = true
-        latestLevels = AudioLevelStats(rmsLevel: 0.0084, peakLevel: 0.04, clippingRatio: 0)
+        lock.lock()
+        storedLatestLevels = AudioLevelStats(rmsLevel: 0.0084, peakLevel: 0.04, clippingRatio: 0)
+        lock.unlock()
         liveLevel(0.42)
     }
 

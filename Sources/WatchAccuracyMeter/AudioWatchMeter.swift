@@ -62,14 +62,12 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
         stop()
-        resetSamples(reservingCapacity: nil)
         lastLiveLevelDeliveryTime = 0
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [])
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
-        configurePreferredBuiltInInput(for: session)
         try session.setActive(true)
         configurePreferredBuiltInInput(for: session)
 
@@ -113,19 +111,16 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        let channelCount = max(1, Int(buffer.format.channelCount))
         var sumSquares: Float = 0
         var peak: Float = 0
         var clipped = 0
 
         lock.lock()
         for i in 0..<frameLength {
-            var mixedValue: Float = 0
-            for channel in 0..<channelCount {
-                mixedValue += channelData[channel][i]
+            let value = channelData[0][i]
+            if samples.count < samples.capacity {
+                samples.append(value)
             }
-            let value = mixedValue / Float(channelCount)
-            samples.append(value)
             sumSquares += value * value
             let magnitude = abs(value)
             peak = max(peak, magnitude)
