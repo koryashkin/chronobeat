@@ -681,6 +681,14 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         try await waitUntil { audioMeter.stopCallCount == 1 }
     }
 
+    func testMeasurementDurationTextUsesConfiguredDuration() {
+        let audioMeter = FakeAudioMeter(samples: [], sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 12)
+
+        XCTAssertEqual(viewModel.measurementDurationText, "12 sec")
+    }
+
     func testPermissionFailureDoesNotStartInjectedAudioMeter() async throws {
         let audioMeter = FakeAudioMeter(samples: [],
                                         sampleRate: sampleRate,
@@ -702,6 +710,82 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertTrue(message.contains("Microphone access is required"))
         XCTAssertTrue(audioMeter.didRequestPermission)
         XCTAssertEqual(audioMeter.startCallCount, 0)
+    }
+
+    func testUnsupportedInputRouteFailsImmediately() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeWarning: "Use the built-in iPhone microphone.")
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 60)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("built-in iPhone microphone"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+    }
+
+    func testQuietPreflightFailsBeforeFullMeasurementDuration() async throws {
+        let samples = Array(repeating: Float(0), count: Int(sampleRate * 60))
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        latestLevels: AudioLevelStats(rmsLevel: 0.0001,
+                                                                      peakLevel: 0.0005,
+                                                                      clippingRatio: 0))
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.25)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("too quiet"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 0)
+    }
+
+    func testRouteChangeFailureStopsMeasurement() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        captureFailure: .routeChangedDuringCapture)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 60)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("route changed"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 0)
     }
 
     func testInactiveSceneStopsInjectedAudioMeasurement() async throws {
@@ -797,6 +881,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     var actualSampleRate: Double
     var routeDescription: String
     var routeWarning: String?
+    var captureFailure: AudioMeterError?
     var latestLevels: AudioLevelStats {
         lock.lock()
         let levels = storedLatestLevels
@@ -807,6 +892,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     private let lock = NSLock()
     private let samples: [Float]
     private let permissionError: Error?
+    private let startLevels: AudioLevelStats
     private var storedLatestLevels: AudioLevelStats = .empty
     private var hasStarted = false
 
@@ -823,11 +909,17 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
          sampleRate: Double,
          routeDescription: String = "Synthetic audio input",
          routeWarning: String? = nil,
+         latestLevels: AudioLevelStats = AudioLevelStats(rmsLevel: 0.0084,
+                                                         peakLevel: 0.04,
+                                                         clippingRatio: 0),
+         captureFailure: AudioMeterError? = nil,
          permissionError: Error? = nil) {
         self.samples = samples
         self.actualSampleRate = sampleRate
         self.routeDescription = routeDescription
         self.routeWarning = routeWarning
+        self.startLevels = latestLevels
+        self.captureFailure = captureFailure
         self.permissionError = permissionError
     }
 
@@ -842,7 +934,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
         startCallCount += 1
         hasStarted = true
         lock.lock()
-        storedLatestLevels = AudioLevelStats(rmsLevel: 0.0084, peakLevel: 0.04, clippingRatio: 0)
+        storedLatestLevels = startLevels
         lock.unlock()
         liveLevel(0.42)
     }

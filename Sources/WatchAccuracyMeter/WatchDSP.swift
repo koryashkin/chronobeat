@@ -161,6 +161,21 @@ struct WatchMeasurementResult {
 }
 
 enum WatchDSP {
+    private enum DSPConfiguration {
+        static let autoMinimumScore = 0.58
+        static let autoAmbiguousMargin = 0.06
+        static let autoMaximumOutlierRatio = 0.62
+        static let autoMinimumPeriodicity = 0.50
+        static let autoUsableCoverage = 0.78
+        static let autoUsableRecall = 0.75
+        static let autoUsablePeriodicity = 0.55
+        static let autoUsableMaximumOutlierRatio = 0.58
+
+        static let tickHighPassCutoffHz = 180.0
+        static let transientSignalWeight: Float = 0.35
+        static let transientDerivativeWeight: Float = 0.55
+    }
+
     static func analyzeAuto(capture: AudioCapture) -> WatchMeasurementResult {
         analyzeAuto(samples: capture.samples,
                     sampleRate: capture.sampleRate,
@@ -212,10 +227,10 @@ enum WatchDSP {
         let margin = bestScore - secondScore
         let hasUsableGrid = hasUsableAutoGrid(verifiedBest)
         let isAmbiguous = verifiedBest.quality == .low
-            || bestScore < 0.58
-            || (!hasUsableGrid && margin < 0.06)
-            || verifiedBest.outlierRatio > 0.62
-            || verifiedBest.periodicityScore < 0.50
+            || bestScore < DSPConfiguration.autoMinimumScore
+            || (!hasUsableGrid && margin < DSPConfiguration.autoAmbiguousMargin)
+            || verifiedBest.outlierRatio > DSPConfiguration.autoMaximumOutlierRatio
+            || verifiedBest.periodicityScore < DSPConfiguration.autoMinimumPeriodicity
 
         if isAmbiguous {
             return replacing(result: verifiedBest,
@@ -445,21 +460,31 @@ enum WatchDSP {
         output.reserveCapacity(input.count)
 
         // DC removal, rumble suppression, and transient emphasis keep handling noise from driving detection.
-        var previous: Float = input[0] - mean
-        var hp: Float = 0
-        var previousHP: Float = 0
-        let cutoff = max(40.0, min(180.0, sampleRate / 600.0))
+        var previousInput: Float = input[0] - mean
+        var firstHP: Float = 0
+        var previousFirstHP: Float = 0
+        var secondHP: Float = 0
+        var previousSecondHP: Float = 0
+        var previousDerivativeInput: Float = 0
+        let cutoff = DSPConfiguration.tickHighPassCutoffHz
         let dt = 1.0 / sampleRate
         let rc = 1.0 / (2.0 * Double.pi * cutoff)
         let alpha = Float(rc / (rc + dt))
 
         for raw in input {
             let x = raw - mean
-            hp = alpha * (hp + x - previous)
-            previous = x
-            let derivative = hp - previousHP
-            let transient = hp * 0.35 + derivative * 0.90
-            previousHP = hp
+            firstHP = alpha * (firstHP + x - previousInput)
+            previousInput = x
+            secondHP = alpha * (secondHP + firstHP - previousFirstHP)
+            previousFirstHP = firstHP
+
+            let derivativeInput = (secondHP + previousSecondHP) * 0.5
+            let derivative = derivativeInput - previousDerivativeInput
+            let transient = secondHP * DSPConfiguration.transientSignalWeight
+                + derivative * DSPConfiguration.transientDerivativeWeight
+
+            previousSecondHP = secondHP
+            previousDerivativeInput = derivativeInput
             output.append(transient)
         }
         return output
@@ -698,14 +723,8 @@ enum WatchDSP {
         let countMatch = max(0, 1 - abs(Double(candidateCount - expected)) / Double(expected))
         let outlierScore = max(0, 1 - fit.outlierRatio)
 
-        let stabilityScore: Double
-        if fit.windowRates.count >= 3 {
-            let mean = fit.windowRates.reduce(0, +) / Double(fit.windowRates.count)
-            let variance = fit.windowRates.map { pow($0 - mean, 2) }.reduce(0, +) / Double(fit.windowRates.count)
-            stabilityScore = max(0, 1 - sqrt(variance) / 15.0)
-        } else {
-            stabilityScore = fit.validCount >= max(80, Int(Double(expected) * 0.65)) ? 0.70 : 0.35
-        }
+        let stabilityScore = windowRateStabilityScore(windowRates: fit.windowRates)
+            ?? (fit.validCount >= max(80, Int(Double(expected) * 0.65)) ? 0.70 : 0.35)
 
         let score = fit.beatCoverage * 0.55
             + outlierScore * 0.20
@@ -723,14 +742,8 @@ enum WatchDSP {
         let countMatch = candidateCountMatch(candidatePeakCount: candidateCount,
                                              expectedTickCount: expectedTickCount)
         let outlierScore = max(0, 1 - fit.outlierRatio)
-        let stabilityScore: Double
-        if fit.windowRates.count >= 3 {
-            let mean = fit.windowRates.reduce(0, +) / Double(fit.windowRates.count)
-            let variance = fit.windowRates.map { pow($0 - mean, 2) }.reduce(0, +) / Double(fit.windowRates.count)
-            stabilityScore = max(0, 1 - sqrt(variance) / 15.0)
-        } else {
-            stabilityScore = fit.validCount >= max(80, Int(Double(max(expectedTickCount, 1)) * 0.65)) ? 0.70 : 0.35
-        }
+        let stabilityScore = windowRateStabilityScore(windowRates: fit.windowRates)
+            ?? (fit.validCount >= max(80, Int(Double(max(expectedTickCount, 1)) * 0.65)) ? 0.70 : 0.35)
 
         let recallEstimate = tickRecallEstimate(validPeaks: fit.validCount,
                                                 expectedTickCount: expectedTickCount)
@@ -898,8 +911,9 @@ enum WatchDSP {
         guard var pairs = bestAssignment?.pairs else { return nil }
         guard pairs.count > 50 else { return nil }
 
-        var slope = linearRegressionSlope(pairs: pairs) ?? expectedPeriod
-        var intercept = linearRegressionIntercept(pairs: pairs, slope: slope) ?? pairs[0].t
+        let initialRegression = linearRegression(pairs: pairs)
+        var slope = initialRegression?.slope ?? expectedPeriod
+        var intercept = initialRegression?.intercept ?? pairs[0].t
 
         for _ in 0..<4 {
             let reassigned = assignPeaksToGrid(peaks: sortedPeaks,
@@ -910,10 +924,9 @@ enum WatchDSP {
                 pairs = reassigned.pairs
             }
 
-            if let newSlope = linearRegressionSlope(pairs: pairs),
-               let newIntercept = linearRegressionIntercept(pairs: pairs, slope: newSlope) {
-                slope = newSlope
-                intercept = newIntercept
+            if let regression = linearRegression(pairs: pairs) {
+                slope = regression.slope
+                intercept = regression.intercept
             }
 
             var residuals = pairs.map { abs($0.t - (intercept + slope * $0.n)) }
@@ -925,10 +938,9 @@ enum WatchDSP {
             guard filtered.count > 50 else { break }
             pairs = filtered
 
-            if let newSlope = linearRegressionSlope(pairs: pairs),
-               let newIntercept = linearRegressionIntercept(pairs: pairs, slope: newSlope) {
-                slope = newSlope
-                intercept = newIntercept
+            if let regression = linearRegression(pairs: pairs) {
+                slope = regression.slope
+                intercept = regression.intercept
             }
         }
 
@@ -1053,10 +1065,22 @@ enum WatchDSP {
         return min(1, Double(pairs.count) / Double(expectedSlots))
     }
 
-    private static func linearRegressionSlope(pairs: [(n: Double, t: Double)]) -> Double? {
+    private struct LinearRegression {
+        let slope: Double
+        let intercept: Double
+    }
+
+    private static func linearRegression(pairs: [(n: Double, t: Double)]) -> LinearRegression? {
         guard pairs.count > 1 else { return nil }
-        let meanN = pairs.map(\.n).reduce(0, +) / Double(pairs.count)
-        let meanT = pairs.map(\.t).reduce(0, +) / Double(pairs.count)
+        var sumN = 0.0
+        var sumT = 0.0
+        for pair in pairs {
+            sumN += pair.n
+            sumT += pair.t
+        }
+
+        let meanN = sumN / Double(pairs.count)
+        let meanT = sumT / Double(pairs.count)
         var numerator = 0.0
         var denominator = 0.0
         for p in pairs {
@@ -1064,14 +1088,8 @@ enum WatchDSP {
             denominator += (p.n - meanN) * (p.n - meanN)
         }
         guard denominator > 0 else { return nil }
-        return numerator / denominator
-    }
-
-    private static func linearRegressionIntercept(pairs: [(n: Double, t: Double)], slope: Double) -> Double? {
-        guard !pairs.isEmpty else { return nil }
-        let meanN = pairs.map(\.n).reduce(0, +) / Double(pairs.count)
-        let meanT = pairs.map(\.t).reduce(0, +) / Double(pairs.count)
-        return meanT - slope * meanN
+        let slope = numerator / denominator
+        return LinearRegression(slope: slope, intercept: meanT - slope * meanN)
     }
 
     private struct WindowRateSummary {
@@ -1097,8 +1115,8 @@ enum WatchDSP {
         while start + windowSize <= pairs.count {
             analysisWindowCount += 1
             let window = Array(pairs[start..<(start + windowSize)])
-            if let slope = linearRegressionSlope(pairs: window), slope > 0 {
-                let detectedBPH = 3600.0 / slope
+            if let regression = linearRegression(pairs: window), regression.slope > 0 {
+                let detectedBPH = 3600.0 / regression.slope
                 let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
                 rates.append(rate)
                 successfulWindowCount += 1
@@ -1109,6 +1127,23 @@ enum WatchDSP {
         return WindowRateSummary(rates: rates,
                                  analysisWindowCount: analysisWindowCount,
                                  successfulWindowCount: successfulWindowCount)
+    }
+
+    private static func windowRateStabilityScore(windowRates: [Double]) -> Double? {
+        guard let stdev = windowRateStandardDeviation(windowRates: windowRates) else { return nil }
+        return max(0, 1 - stdev / 15.0)
+    }
+
+    private static func windowRateStability100(windowRates: [Double]) -> Double? {
+        guard let stdev = windowRateStandardDeviation(windowRates: windowRates) else { return nil }
+        return max(0, 100.0 - stdev * 8.0)
+    }
+
+    private static func windowRateStandardDeviation(windowRates: [Double]) -> Double? {
+        guard windowRates.count >= 3 else { return nil }
+        let mean = windowRates.reduce(0, +) / Double(windowRates.count)
+        let variance = windowRates.map { pow($0 - mean, 2) }.reduce(0, +) / Double(windowRates.count)
+        return sqrt(variance)
     }
 
     private static func qualityScore(
@@ -1124,15 +1159,7 @@ enum WatchDSP {
         let peakScore = min(100, Double(validPeaks) / Double(expectedValidPeaks) * 100.0)
         let outlierScore = max(0, 100.0 - outlierRatio * 150.0)
 
-        let stabilityScore: Double
-        if windowRates.count >= 3 {
-            let mean = windowRates.reduce(0, +) / Double(windowRates.count)
-            let variance = windowRates.map { pow($0 - mean, 2) }.reduce(0, +) / Double(windowRates.count)
-            let stdev = sqrt(variance)
-            stabilityScore = max(0, 100.0 - stdev * 8.0)
-        } else {
-            stabilityScore = 40
-        }
+        let stabilityScore = windowRateStability100(windowRates: windowRates) ?? 40
 
         let periodicityComponent = periodicityScore * 100
         let baseScore = peakScore * 0.25
@@ -1209,10 +1236,10 @@ enum WatchDSP {
 
     private static func hasUsableAutoGrid(_ result: WatchMeasurementResult) -> Bool {
         result.quality != .low
-            && result.beatCoverage >= 0.78
-            && result.tickRecallEstimate >= 0.75
-            && result.periodicityScore >= 0.55
-            && result.outlierRatio <= 0.58
+            && result.beatCoverage >= DSPConfiguration.autoUsableCoverage
+            && result.tickRecallEstimate >= DSPConfiguration.autoUsableRecall
+            && result.periodicityScore >= DSPConfiguration.autoUsablePeriodicity
+            && result.outlierRatio <= DSPConfiguration.autoUsableMaximumOutlierRatio
     }
 
     private static func replacing(

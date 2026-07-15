@@ -52,7 +52,7 @@ struct ContentView: View {
     private var content: some View {
         switch viewModel.state {
         case .idle:
-            Button("Start 60 sec measurement") {
+            Button("Start \(viewModel.measurementDurationText) measurement") {
                 viewModel.startMeasurement()
             }
             .buttonStyle(.borderedProminent)
@@ -66,7 +66,7 @@ struct ContentView: View {
             VStack(spacing: 12) {
                 ProgressView(value: viewModel.progress)
                     .accessibilityIdentifier("measurementProgress")
-                Text("Listening… \(Int(viewModel.elapsedSeconds)) / 60 sec")
+                Text("Listening… \(Int(viewModel.elapsedSeconds)) / \(viewModel.measurementDurationText)")
                     .font(.title3.monospacedDigit())
                 CaptureStatusView(isReceivingAudio: viewModel.isReceivingAudio,
                                   capturedAudioSeconds: viewModel.capturedAudioSeconds,

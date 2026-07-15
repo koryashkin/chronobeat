@@ -13,6 +13,18 @@ Fixed on `codex/mvp-simulator-tests`:
 - Low priority / nice-to-have: 20.
 - Audio engineering: A7, A10.
 
+### 2026-07-15
+
+Fixed on `codex/mvp-simulator-tests`:
+
+- Code quality / cleanup: 11, 12, 13, 16.
+- Audio engineering: A1, A3, A4, A5, A6, A8, A9.
+
+Partially improved:
+
+- Architecture / Design: 10 (named the Auto/DSP preprocessing thresholds touched in this pass; broader quality thresholds still need centralization).
+- Audio engineering: A2 (moved `ProcessInfo.processInfo.systemUptime` outside the lock; the larger lock-free/priority-inheritance work remains).
+
 ---
 
 ## Bugs (correctness)

@@ -26,8 +26,13 @@ final class MeasurementViewModel: ObservableObject {
         state.canEditBeatRate
     }
 
+    var measurementDurationText: String {
+        let seconds = max(1, Int(measurementDuration.rounded()))
+        return seconds == 1 ? "1 sec" : "\(seconds) sec"
+    }
+
     private let audioMeter: any WatchAudioMetering
-    private let measurementDuration: TimeInterval
+    let measurementDuration: TimeInterval
     private var timerTask: Task<Void, Never>?
     private var measurementTask: Task<Void, Never>?
     private var lastObservedSampleCount = 0
@@ -74,10 +79,13 @@ final class MeasurementViewModel: ObservableObject {
                 }
             }
             routeWarning = audioMeter.routeWarning
+            if let routeWarning {
+                throw AudioMeterError.unsupportedInputRoute(routeWarning)
+            }
 
             startTimer()
 
-            try await Task.sleep(nanoseconds: UInt64(measurementDuration * 1_000_000_000))
+            try await waitForMeasurementDuration(generation: generation)
             try Task.checkCancellation()
             await finishMeasurement(selectedBPH: selectedBPH, generation: generation)
         } catch is CancellationError {
@@ -206,6 +214,32 @@ final class MeasurementViewModel: ObservableObject {
                 }
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
+        }
+    }
+
+    private func waitForMeasurementDuration(generation: Int) async throws {
+        let start = Date()
+        let preflightDelay = min(5, max(0.05, measurementDuration * 0.25))
+        var didRunPreflight = false
+
+        while Date().timeIntervalSince(start) < measurementDuration {
+            try Task.checkCancellation()
+            guard generation == measurementGeneration else { throw CancellationError() }
+
+            if let captureFailure = audioMeter.captureFailure {
+                throw captureFailure
+            }
+
+            let elapsed = Date().timeIntervalSince(start)
+            if !didRunPreflight, elapsed >= preflightDelay {
+                didRunPreflight = true
+                let levels = audioMeter.latestLevels
+                if audioMeter.capturedSampleCount == 0 || levels.peakLevel < 0.002 {
+                    throw AudioMeterError.inputTooQuiet
+                }
+            }
+
+            try await Task.sleep(nanoseconds: 100_000_000)
         }
     }
 
