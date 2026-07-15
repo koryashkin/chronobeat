@@ -5,6 +5,7 @@ protocol WatchAudioMetering: AnyObject, Sendable {
     var actualSampleRate: Double { get }
     var routeDescription: String { get }
     var routeWarning: String? { get }
+    var captureFailure: AudioMeterError? { get }
     var capturedSampleCount: Int { get }
     var latestLevels: AudioLevelStats { get }
 
@@ -20,7 +21,9 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
     private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
     private var storedLatestLevels: AudioLevelStats = .empty
+    private var storedCaptureFailure: AudioMeterError?
     private var lastLiveLevelDeliveryTime: TimeInterval = 0
+    private var notificationObservers: [NSObjectProtocol] = []
 
     private(set) var actualSampleRate: Double = 48_000
     private(set) var routeDescription: String = "Unknown"
@@ -33,6 +36,13 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         let levels = storedLatestLevels
         lock.unlock()
         return levels
+    }
+
+    var captureFailure: AudioMeterError? {
+        lock.lock()
+        let failure = storedCaptureFailure
+        lock.unlock()
+        return failure
     }
 
     var capturedSampleCount: Int {
@@ -62,14 +72,12 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
     func start(liveLevel: @escaping (Float) -> Void) throws {
         stop()
-        resetSamples(reservingCapacity: nil)
         lastLiveLevelDeliveryTime = 0
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [])
         try session.setPreferredSampleRate(48_000)
         try session.setPreferredIOBufferDuration(0.02)
-        configurePreferredBuiltInInput(for: session)
         try session.setActive(true)
         configurePreferredBuiltInInput(for: session)
 
@@ -90,9 +98,11 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
         engine.prepare()
         try engine.start()
+        registerRouteChangeObservers(session: session, engine: engine)
     }
 
     func stop() {
+        unregisterRouteChangeObservers()
         tappedInputNode?.removeTap(onBus: 0)
         tappedInputNode = nil
         engine?.stop()
@@ -113,19 +123,18 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
 
-        let channelCount = max(1, Int(buffer.format.channelCount))
         var sumSquares: Float = 0
         var peak: Float = 0
         var clipped = 0
 
+        let now = ProcessInfo.processInfo.systemUptime
+
         lock.lock()
         for i in 0..<frameLength {
-            var mixedValue: Float = 0
-            for channel in 0..<channelCount {
-                mixedValue += channelData[channel][i]
+            let value = channelData[0][i]
+            if samples.count < samples.capacity {
+                samples.append(value)
             }
-            let value = mixedValue / Float(channelCount)
-            samples.append(value)
             sumSquares += value * value
             let magnitude = abs(value)
             peak = max(peak, magnitude)
@@ -134,7 +143,6 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             }
         }
 
-        let now = ProcessInfo.processInfo.systemUptime
         let shouldDeliverLiveLevel = now - lastLiveLevelDeliveryTime >= liveLevelMinimumInterval
         if shouldDeliverLiveLevel {
             lastLiveLevelDeliveryTime = now
@@ -158,6 +166,38 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             samples.reserveCapacity(capacity)
         }
         storedLatestLevels = .empty
+        storedCaptureFailure = nil
+        lock.unlock()
+    }
+
+    private func registerRouteChangeObservers(session: AVAudioSession, engine: AVAudioEngine) {
+        unregisterRouteChangeObservers()
+
+        let center = NotificationCenter.default
+        let routeObserver = center.addObserver(forName: AVAudioSession.routeChangeNotification,
+                                               object: nil,
+                                               queue: nil) { [weak self] _ in
+            self?.markCaptureFailure(.routeChangedDuringCapture)
+        }
+        let engineObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange,
+                                                object: engine,
+                                                queue: nil) { [weak self] _ in
+            self?.markCaptureFailure(.routeChangedDuringCapture)
+        }
+        notificationObservers = [routeObserver, engineObserver]
+    }
+
+    private func unregisterRouteChangeObservers() {
+        let observers = notificationObservers
+        notificationObservers.removeAll()
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func markCaptureFailure(_ failure: AudioMeterError) {
+        lock.lock()
+        storedCaptureFailure = failure
         lock.unlock()
     }
 
@@ -210,11 +250,20 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
 enum AudioMeterError: LocalizedError {
     case microphonePermissionDenied
+    case unsupportedInputRoute(String)
+    case inputTooQuiet
+    case routeChangedDuringCapture
 
     var errorDescription: String? {
         switch self {
         case .microphonePermissionDenied:
             return "Microphone access is required to measure watch accuracy. Enable it in Settings."
+        case .unsupportedInputRoute(let routeWarning):
+            return routeWarning
+        case .inputTooQuiet:
+            return "The tick signal is too quiet. Put the watch caseback directly against the bottom microphone and try again."
+        case .routeChangedDuringCapture:
+            return "The microphone route changed during capture. Use the built-in iPhone microphone and start again."
         }
     }
 }

@@ -143,6 +143,17 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
     }
 
+    func testAutoBPHPreservesTooQuietFailureReason() {
+        let samples = Array(repeating: Float(0), count: Int(sampleRate * 12))
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Auto silence")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .tooQuiet)
+    }
+
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
         let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
@@ -207,6 +218,21 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
     }
 
+    func testTudorGMTFixtureAutoDetectsNoisyBeatRate() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor GMT fixture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.78)
+        XCTAssertGreaterThanOrEqual(result.periodicityScore, 0.55)
+        XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
+    }
+
     func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
         let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
         let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
@@ -240,7 +266,8 @@ final class WatchDSPTests: XCTestCase {
     func testRealFixtureBenchmarkWindowsMeetRecognitionGate() throws {
         let fixtureSpecs = [
             LabeledFixture(name: "king-seiko-28800-10-30s", bph: selectedBPH),
-            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH)
+            LabeledFixture(name: "iphone-bottom-28800-0-20s", bph: selectedBPH),
+            LabeledFixture(name: "tudor-gmt-28800-40-60s", bph: selectedBPH)
         ]
         var outcomes: [FixtureWindowOutcome] = []
 
@@ -651,6 +678,15 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertEqual(viewModel.liveLevelText, "42%")
 
         viewModel.cancelMeasurement()
+        try await waitUntil { audioMeter.stopCallCount == 1 }
+    }
+
+    func testMeasurementDurationTextUsesConfiguredDuration() {
+        let audioMeter = FakeAudioMeter(samples: [], sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 12)
+
+        XCTAssertEqual(viewModel.measurementDurationText, "12 sec")
     }
 
     func testPermissionFailureDoesNotStartInjectedAudioMeter() async throws {
@@ -676,6 +712,82 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertEqual(audioMeter.startCallCount, 0)
     }
 
+    func testUnsupportedInputRouteFailsImmediately() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeWarning: "Use the built-in iPhone microphone.")
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 60)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("built-in iPhone microphone"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+    }
+
+    func testQuietPreflightFailsBeforeFullMeasurementDuration() async throws {
+        let samples = Array(repeating: Float(0), count: Int(sampleRate * 60))
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        latestLevels: AudioLevelStats(rmsLevel: 0.0001,
+                                                                      peakLevel: 0.0005,
+                                                                      clippingRatio: 0))
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.25)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("too quiet"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 0)
+    }
+
+    func testRouteChangeFailureStopsMeasurement() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        captureFailure: .routeChangedDuringCapture)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 60)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected a failed state.")
+        }
+
+        XCTAssertTrue(message.contains("route changed"))
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 0)
+    }
+
     func testInactiveSceneStopsInjectedAudioMeasurement() async throws {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
         let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
@@ -687,9 +799,29 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         try await waitUntil { viewModel.isMeasuring }
         viewModel.stopForInactiveScene()
 
+        try await waitUntil { audioMeter.stopCallCount == 1 }
         XCTAssertTrue(viewModel.canEditBeatRate)
         XCTAssertEqual(audioMeter.startCallCount, 1)
-        XCTAssertGreaterThanOrEqual(audioMeter.stopCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
+    }
+
+    func testCancelStopsInjectedAudioOnlyOnce() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
+        let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 5)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil { viewModel.isMeasuring }
+        viewModel.cancelMeasurement()
+
+        try await waitUntil { audioMeter.stopCallCount == 1 }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(viewModel.canEditBeatRate)
+        XCTAssertEqual(audioMeter.startCallCount, 1)
+        XCTAssertEqual(audioMeter.stopCallCount, 1)
     }
 
     private func makeSyntheticWatchSamples(
@@ -749,10 +881,19 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     var actualSampleRate: Double
     var routeDescription: String
     var routeWarning: String?
-    var latestLevels: AudioLevelStats = .empty
+    var captureFailure: AudioMeterError?
+    var latestLevels: AudioLevelStats {
+        lock.lock()
+        let levels = storedLatestLevels
+        lock.unlock()
+        return levels
+    }
 
+    private let lock = NSLock()
     private let samples: [Float]
     private let permissionError: Error?
+    private let startLevels: AudioLevelStats
+    private var storedLatestLevels: AudioLevelStats = .empty
     private var hasStarted = false
 
     private(set) var didRequestPermission = false
@@ -768,11 +909,17 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
          sampleRate: Double,
          routeDescription: String = "Synthetic audio input",
          routeWarning: String? = nil,
+         latestLevels: AudioLevelStats = AudioLevelStats(rmsLevel: 0.0084,
+                                                         peakLevel: 0.04,
+                                                         clippingRatio: 0),
+         captureFailure: AudioMeterError? = nil,
          permissionError: Error? = nil) {
         self.samples = samples
         self.actualSampleRate = sampleRate
         self.routeDescription = routeDescription
         self.routeWarning = routeWarning
+        self.startLevels = latestLevels
+        self.captureFailure = captureFailure
         self.permissionError = permissionError
     }
 
@@ -786,7 +933,9 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     func start(liveLevel: @escaping (Float) -> Void) throws {
         startCallCount += 1
         hasStarted = true
-        latestLevels = AudioLevelStats(rmsLevel: 0.0084, peakLevel: 0.04, clippingRatio: 0)
+        lock.lock()
+        storedLatestLevels = startLevels
+        lock.unlock()
         liveLevel(0.42)
     }
 

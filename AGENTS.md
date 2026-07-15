@@ -51,6 +51,7 @@ Simulator tests validate compilation, UI wiring, fixtures, and DSP regressions. 
 - Manual BPH results must run competing-BPH/harmonic checks before returning medium/high confidence.
 - Future auto-BPH work should evaluate all supported BPH values and reject ambiguous winners.
 - Do not show confident rate results when periodicity is weak, BPH is ambiguous, or a harmonic match is likely.
+- `.measurement` disables iOS software AGC/EQ, but older iPhones may still apply hardware ALC that cannot be disabled. Keep envelope normalization windows long enough to tolerate slow gain sweeps.
 
 ## Fixtures And Captures
 
