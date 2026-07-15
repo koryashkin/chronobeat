@@ -233,8 +233,7 @@ final class MeasurementViewModel: ObservableObject {
             let elapsed = Date().timeIntervalSince(start)
             if !didRunPreflight, elapsed >= preflightDelay {
                 didRunPreflight = true
-                let levels = audioMeter.latestLevels
-                if audioMeter.capturedSampleCount == 0 || levels.peakLevel < 0.002 {
+                if audioMeter.capturedSampleCount == 0 || audioMeter.peakLevelSinceStart < 0.002 {
                     throw AudioMeterError.inputTooQuiet
                 }
             }

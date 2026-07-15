@@ -163,13 +163,14 @@ struct WatchMeasurementResult {
 enum WatchDSP {
     private enum DSPConfiguration {
         static let autoMinimumScore = 0.58
-        static let autoAmbiguousMargin = 0.06
+        static let autoAmbiguousMargin = 0.04
         static let autoMaximumOutlierRatio = 0.62
         static let autoMinimumPeriodicity = 0.50
-        static let autoUsableCoverage = 0.78
-        static let autoUsableRecall = 0.75
-        static let autoUsablePeriodicity = 0.55
-        static let autoUsableMaximumOutlierRatio = 0.58
+        static let minimumConfidentRecall = 0.70
+        static let minimumSuccessfulWindowRatio = 0.70
+        static let minimumWindowRecall = 0.60
+        static let analysisWindowDuration = 10.0
+        static let analysisWindowHop = 5.0
 
         static let tickHighPassCutoffHz = 180.0
         static let transientSignalWeight: Float = 0.35
@@ -224,13 +225,11 @@ enum WatchDSP {
                                    isAutoBPH: true)
         let bestScore = max(autoBeatRateScore(best), autoBeatRateScore(verifiedBest))
         let secondScore = sortedCandidates.dropFirst().first.map(autoBeatRateScore) ?? 0
-        let margin = bestScore - secondScore
-        let hasUsableGrid = hasUsableAutoGrid(verifiedBest)
-        let isAmbiguous = verifiedBest.quality == .low
-            || bestScore < DSPConfiguration.autoMinimumScore
-            || (!hasUsableGrid && margin < DSPConfiguration.autoAmbiguousMargin)
-            || verifiedBest.outlierRatio > DSPConfiguration.autoMaximumOutlierRatio
-            || verifiedBest.periodicityScore < DSPConfiguration.autoMinimumPeriodicity
+        let isAmbiguous = autoSelectionIsAmbiguous(bestScore: bestScore,
+                                                   secondScore: secondScore,
+                                                   verifiedQuality: verifiedBest.quality,
+                                                   outlierRatio: verifiedBest.outlierRatio,
+                                                   periodicityScore: verifiedBest.periodicityScore)
 
         if isAmbiguous {
             return replacing(result: verifiedBest,
@@ -318,6 +317,8 @@ enum WatchDSP {
                                         beatCoverage: fit.beatCoverage,
                                         outlierRatio: fit.outlierRatio,
                                         windowRates: fit.windowRates,
+                                        analysisWindowCount: fit.analysisWindowCount,
+                                        successfulWindowCount: fit.successfulWindowCount,
                                         periodicityScore: selectedDetection.periodicityScore)
         let tickRecallEstimate = tickRecallEstimate(validPeaks: fit.validCount,
                                                     expectedTickCount: expectedTickCount)
@@ -325,17 +326,26 @@ enum WatchDSP {
         let hasConfidentCoverage = hasConfidentCoverage(beatCoverage: fit.beatCoverage,
                                                         candidatePeakCount: detection.stats.candidatePeakCount,
                                                         validPeakCount: fit.validCount,
-                                                        expectedTickCount: expectedTickCount)
+                                                        expectedTickCount: expectedTickCount,
+                                                        analysisWindowCount: fit.analysisWindowCount,
+                                                        successfulWindowCount: fit.successfulWindowCount)
+        let hasStableTemporalCoverage = successfulWindowRatio(analysisWindowCount: fit.analysisWindowCount,
+                                                               successfulWindowCount: fit.successfulWindowCount)
+            >= DSPConfiguration.minimumSuccessfulWindowRatio
         let hasRecoverableRealGrid = fit.validCount >= 100
             && fit.beatCoverage >= 0.70
             && tickRecallEstimate >= 0.70
+            && hasStableTemporalCoverage
             && selectedDetection.periodicityScore >= 0.50
             && fit.outlierRatio < 0.70
         if hasRecoverableRealGrid {
             qualityScore = max(qualityScore, 55)
         }
 
-        if qualityScore >= 80, fit.beatCoverage >= 0.80, selectedDetection.periodicityScore >= 0.70 {
+        if qualityScore >= 80,
+           hasConfidentCoverage,
+           fit.beatCoverage >= 0.80,
+           selectedDetection.periodicityScore >= 0.70 {
             quality = .high
         } else if qualityScore >= 50, hasConfidentCoverage, selectedDetection.periodicityScore >= 0.50 {
             quality = .medium
@@ -576,7 +586,9 @@ enum WatchDSP {
                                         sampleRate: sampleRate,
                                         expectedPeriod: expectedPeriod,
                                         thresholdScale: scale)
-            guard let fit = robustFit(peaks: detection.peaks, selectedBPH: selectedBPH) else {
+            guard let fit = robustFit(peaks: detection.peaks,
+                                      selectedBPH: selectedBPH,
+                                      captureDuration: Double(envelope.count) / sampleRate) else {
                 continue
             }
 
@@ -856,8 +868,19 @@ enum WatchDSP {
         beatCoverage: Double,
         candidatePeakCount: Int,
         validPeakCount: Int,
-        expectedTickCount: Int
+        expectedTickCount: Int,
+        analysisWindowCount: Int,
+        successfulWindowCount: Int
     ) -> Bool {
+        let recall = tickRecallEstimate(validPeaks: validPeakCount,
+                                        expectedTickCount: expectedTickCount)
+        let temporalCoverage = successfulWindowRatio(analysisWindowCount: analysisWindowCount,
+                                                      successfulWindowCount: successfulWindowCount)
+        guard recall >= DSPConfiguration.minimumConfidentRecall,
+              temporalCoverage >= DSPConfiguration.minimumSuccessfulWindowRatio else {
+            return false
+        }
+
         if beatCoverage >= 0.80 {
             return true
         }
@@ -880,7 +903,7 @@ enum WatchDSP {
         let successfulWindowCount: Int
     }
 
-    private static func robustFit(peaks: [Double], selectedBPH: Int) -> FitResult? {
+    private static func robustFit(peaks: [Double], selectedBPH: Int, captureDuration: Double) -> FitResult? {
         guard peaks.count > 50 else { return nil }
 
         let expectedPeriod = 3600.0 / Double(selectedBPH)
@@ -946,7 +969,9 @@ enum WatchDSP {
 
         let outlierRatio = 1.0 - Double(pairs.count) / Double(peaks.count)
         let beatCoverage = beatCoverage(for: pairs)
-        let windowSummary = windowRateEstimates(pairs: pairs, selectedBPH: selectedBPH)
+        let windowSummary = windowRateEstimates(pairs: pairs,
+                                                selectedBPH: selectedBPH,
+                                                captureDuration: captureDuration)
 
         guard slope > 0 else { return nil }
         return FitResult(period: slope,
@@ -1098,30 +1123,44 @@ enum WatchDSP {
         let successfulWindowCount: Int
     }
 
-    private static func windowRateEstimates(pairs: [(n: Double, t: Double)], selectedBPH: Int) -> WindowRateSummary {
-        guard pairs.count > 100 else {
-            return WindowRateSummary(rates: [],
-                                     analysisWindowCount: pairs.count > 50 ? 1 : 0,
-                                     successfulWindowCount: 0)
+    private static func windowRateEstimates(
+        pairs: [(n: Double, t: Double)],
+        selectedBPH: Int,
+        captureDuration: Double
+    ) -> WindowRateSummary {
+        guard captureDuration > 0 else {
+            return WindowRateSummary(rates: [], analysisWindowCount: 0, successfulWindowCount: 0)
         }
 
-        let windowSize = 80
-        let step = 40
+        let expectedPeriod = 3600.0 / Double(selectedBPH)
         var rates: [Double] = []
         var analysisWindowCount = 0
         var successfulWindowCount = 0
-        var start = 0
+        var windowStart = 0.0
 
-        while start + windowSize <= pairs.count {
+        while windowStart < captureDuration {
+            let windowEnd = min(captureDuration,
+                                windowStart + DSPConfiguration.analysisWindowDuration)
+            let windowDuration = windowEnd - windowStart
+            guard windowDuration >= DSPConfiguration.analysisWindowHop else { break }
+
             analysisWindowCount += 1
-            let window = Array(pairs[start..<(start + windowSize)])
-            if let regression = linearRegression(pairs: window), regression.slope > 0 {
+            let window = pairs.filter { pair in
+                pair.t >= windowStart && (pair.t < windowEnd || windowEnd == captureDuration)
+            }
+            let expectedWindowTicks = max(1, Int((windowDuration / expectedPeriod).rounded()))
+            let minimumWindowTicks = max(3,
+                                         Int((Double(expectedWindowTicks)
+                                             * DSPConfiguration.minimumWindowRecall).rounded(.up)))
+            if window.count >= minimumWindowTicks,
+               let regression = linearRegression(pairs: window),
+               regression.slope > 0 {
                 let detectedBPH = 3600.0 / regression.slope
                 let rate = (detectedBPH / Double(selectedBPH) - 1.0) * 86_400.0
                 rates.append(rate)
                 successfulWindowCount += 1
             }
-            start += step
+            windowStart += DSPConfiguration.analysisWindowHop
         }
 
         return WindowRateSummary(rates: rates,
@@ -1153,6 +1192,8 @@ enum WatchDSP {
         beatCoverage: Double,
         outlierRatio: Double,
         windowRates: [Double],
+        analysisWindowCount: Int,
+        successfulWindowCount: Int,
         periodicityScore: Double
     ) -> Double {
         let expectedValidPeaks = max(50, Int(Double(max(expectedTickCount, 1)) * 0.75))
@@ -1172,7 +1213,9 @@ enum WatchDSP {
         if !hasConfidentCoverage(beatCoverage: beatCoverage,
                                  candidatePeakCount: candidatePeakCount,
                                  validPeakCount: validPeaks,
-                                 expectedTickCount: expectedTickCount) {
+                                 expectedTickCount: expectedTickCount,
+                                 analysisWindowCount: analysisWindowCount,
+                                 successfulWindowCount: successfulWindowCount) {
             return min(score, 49)
         }
         return score
@@ -1181,6 +1224,29 @@ enum WatchDSP {
     private static func tickRecallEstimate(validPeaks: Int, expectedTickCount: Int) -> Double {
         guard expectedTickCount > 0 else { return 0 }
         return min(1, Double(validPeaks) / Double(expectedTickCount))
+    }
+
+    private static func successfulWindowRatio(
+        analysisWindowCount: Int,
+        successfulWindowCount: Int
+    ) -> Double {
+        guard analysisWindowCount > 0 else { return 0 }
+        return min(1, Double(successfulWindowCount) / Double(analysisWindowCount))
+    }
+
+    static func autoSelectionIsAmbiguous(
+        bestScore: Double,
+        secondScore: Double,
+        verifiedQuality: SignalQuality,
+        outlierRatio: Double,
+        periodicityScore: Double
+    ) -> Bool {
+        let margin = bestScore - secondScore
+        return verifiedQuality == .low
+            || bestScore < DSPConfiguration.autoMinimumScore
+            || margin < DSPConfiguration.autoAmbiguousMargin
+            || outlierRatio > DSPConfiguration.autoMaximumOutlierRatio
+            || periodicityScore < DSPConfiguration.autoMinimumPeriodicity
     }
 
     private static func recognitionConfidence(
@@ -1232,14 +1298,6 @@ enum WatchDSP {
         }
 
         return dominantFailureReason
-    }
-
-    private static func hasUsableAutoGrid(_ result: WatchMeasurementResult) -> Bool {
-        result.quality != .low
-            && result.beatCoverage >= DSPConfiguration.autoUsableCoverage
-            && result.tickRecallEstimate >= DSPConfiguration.autoUsableRecall
-            && result.periodicityScore >= DSPConfiguration.autoUsablePeriodicity
-            && result.outlierRatio <= DSPConfiguration.autoUsableMaximumOutlierRatio
     }
 
     private static func replacing(

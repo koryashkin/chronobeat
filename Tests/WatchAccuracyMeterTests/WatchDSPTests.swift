@@ -68,6 +68,21 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.sampleCount, samples.count)
     }
 
+    func testShortCleanIslandInsideFullCaptureRemainsLowQuality() {
+        var samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5, duration: 12)
+        samples.append(contentsOf: repeatElement(Float(0), count: Int(sampleRate * 48)))
+
+        let result = WatchDSP.analyze(samples: samples,
+                                      sampleRate: sampleRate,
+                                      selectedBPH: selectedBPH,
+                                      routeDescription: "Partial synthetic capture")
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertLessThan(result.tickRecallEstimate, 0.30)
+        XCTAssertLessThan(result.successfulWindowCount, result.analysisWindowCount)
+        XCTAssertLessThan(result.qualityScore, 50)
+    }
+
     func testBeatGridFitToleratesMissedTicks() {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 7) { beatIndex in
             beatIndex.isMultiple(of: 19)
@@ -152,6 +167,16 @@ final class WatchDSPTests: XCTestCase {
 
         XCTAssertEqual(result.quality, .low)
         XCTAssertEqual(result.dominantFailureReason, .tooQuiet)
+    }
+
+    func testAutoBPHRejectsNarrowWinnerMarginEvenWithUsableGrid() {
+        let isAmbiguous = WatchDSP.autoSelectionIsAmbiguous(bestScore: 0.76,
+                                                            secondScore: 0.73,
+                                                            verifiedQuality: .high,
+                                                            outlierRatio: 0.10,
+                                                            periodicityScore: 0.85)
+
+        XCTAssertTrue(isAmbiguous)
     }
 
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
@@ -763,6 +788,28 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 0)
     }
 
+    func testPreflightUsesPeakActivityAcrossAudioBuffers() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0, duration: 12)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        latestLevels: AudioLevelStats(rmsLevel: 0.0001,
+                                                                      peakLevel: 0.0005,
+                                                                      clippingRatio: 0),
+                                        peakLevelSinceStart: 0.02)
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.10)
+        viewModel.selectedBPH = .manual(.bph28800)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil(timeout: 15) {
+            if case .result = viewModel.state { return true }
+            return false
+        }
+
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+    }
+
     func testRouteChangeFailureStopsMeasurement() async throws {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
         let audioMeter = FakeAudioMeter(samples: samples,
@@ -888,12 +935,20 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
         lock.unlock()
         return levels
     }
+    var peakLevelSinceStart: Double {
+        lock.lock()
+        let peakLevel = storedPeakLevelSinceStart
+        lock.unlock()
+        return peakLevel
+    }
 
     private let lock = NSLock()
     private let samples: [Float]
     private let permissionError: Error?
     private let startLevels: AudioLevelStats
+    private let startPeakLevelSinceStart: Double
     private var storedLatestLevels: AudioLevelStats = .empty
+    private var storedPeakLevelSinceStart: Double = 0
     private var hasStarted = false
 
     private(set) var didRequestPermission = false
@@ -912,6 +967,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
          latestLevels: AudioLevelStats = AudioLevelStats(rmsLevel: 0.0084,
                                                          peakLevel: 0.04,
                                                          clippingRatio: 0),
+         peakLevelSinceStart: Double? = nil,
          captureFailure: AudioMeterError? = nil,
          permissionError: Error? = nil) {
         self.samples = samples
@@ -919,6 +975,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
         self.routeDescription = routeDescription
         self.routeWarning = routeWarning
         self.startLevels = latestLevels
+        self.startPeakLevelSinceStart = peakLevelSinceStart ?? latestLevels.peakLevel
         self.captureFailure = captureFailure
         self.permissionError = permissionError
     }
@@ -935,6 +992,7 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
         hasStarted = true
         lock.lock()
         storedLatestLevels = startLevels
+        storedPeakLevelSinceStart = startPeakLevelSinceStart
         lock.unlock()
         liveLevel(0.42)
     }
