@@ -8,6 +8,7 @@ protocol WatchAudioMetering: AnyObject, Sendable {
     var captureFailure: AudioMeterError? { get }
     var capturedSampleCount: Int { get }
     var latestLevels: AudioLevelStats { get }
+    var peakLevelSinceStart: Double { get }
 
     func requestPermissionIfNeeded() async throws
     func start(liveLevel: @escaping (Float) -> Void) throws
@@ -21,6 +22,7 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
     private var tappedInputNode: AVAudioInputNode?
     private var samples: [Float] = []
     private var storedLatestLevels: AudioLevelStats = .empty
+    private var storedPeakLevelSinceStart: Double = 0
     private var storedCaptureFailure: AudioMeterError?
     private var lastLiveLevelDeliveryTime: TimeInterval = 0
     private var notificationObservers: [NSObjectProtocol] = []
@@ -50,6 +52,13 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         let count = samples.count
         lock.unlock()
         return count
+    }
+
+    var peakLevelSinceStart: Double {
+        lock.lock()
+        let peakLevel = storedPeakLevelSinceStart
+        lock.unlock()
+        return peakLevel
     }
 
     func requestPermissionIfNeeded() async throws {
@@ -151,6 +160,7 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
                                      peakLevel: Double(peak),
                                      clippingRatio: Double(clipped) / Double(frameLength))
         storedLatestLevels = levels
+        storedPeakLevelSinceStart = max(storedPeakLevelSinceStart, levels.peakLevel)
         lock.unlock()
 
         let normalizedLevel = min(1, Float(levels.rmsLevel) * 50)
@@ -166,6 +176,7 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             samples.reserveCapacity(capacity)
         }
         storedLatestLevels = .empty
+        storedPeakLevelSinceStart = 0
         storedCaptureFailure = nil
         lock.unlock()
     }
