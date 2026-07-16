@@ -258,6 +258,25 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
     }
 
+    func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
+        var samples: [Float] = []
+        samples.reserveCapacity(fixture.samples.count * 3)
+        for _ in 0..<3 {
+            samples.append(contentsOf: fixture.samples)
+        }
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "60-second noisy Tudor fixture")
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+
+        XCTAssertLessThan(elapsed, 30, "Auto BPH post-processing exceeded the 30-second requirement.")
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertEqual(result.sampleCount, samples.count)
+    }
+
     func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
         let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
         let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
@@ -713,6 +732,35 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertTrue(result.isAutoBPH)
         XCTAssertNotEqual(result.quality, .low)
         XCTAssertEqual(result.sampleCount, samples.count)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+    }
+
+    func testAnalysisDeadlineLeavesAnalyzingStateWithFailure() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0,
+                                                duration: 12)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate)
+        let stalledAnalysis: WatchAnalysisOperation = { capture, _ in
+            Thread.sleep(forTimeInterval: 0.20)
+            return WatchDSP.analyze(capture: capture, selectedBPH: 28_800)
+        }
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01,
+                                             analysisTimeout: 0.02,
+                                             analysisOperation: stalledAnalysis)
+
+        viewModel.startMeasurement()
+
+        try await waitUntil(timeout: 2) {
+            if case .failed = viewModel.state { return true }
+            return false
+        }
+
+        guard case .failed(let message) = viewModel.state else {
+            return XCTFail("Expected analysis timeout to leave the analyzing state.")
+        }
+
+        XCTAssertTrue(message.contains("analysis took longer"))
         XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
     }
 

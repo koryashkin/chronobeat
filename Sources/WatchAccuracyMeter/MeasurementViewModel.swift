@@ -1,6 +1,64 @@
 import Foundation
 import AVFoundation
 
+typealias WatchAnalysisOperation = @Sendable (AudioCapture, BeatRateSelection) -> WatchMeasurementResult
+
+private let defaultWatchAnalysisOperation: WatchAnalysisOperation = { capture, selection in
+    switch selection {
+    case .auto:
+        WatchDSP.analyzeAuto(capture: capture)
+    case .manual(let beatRate):
+        WatchDSP.analyze(capture: capture, selectedBPH: beatRate.rawValue)
+    }
+}
+
+private enum WatchAnalysisOutcome: Sendable {
+    case result(WatchMeasurementResult)
+    case timedOut
+    case cancelled
+}
+
+private final class WatchAnalysisCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<WatchAnalysisOutcome, Never>?
+    private var outcome: WatchAnalysisOutcome?
+
+    func wait() async -> WatchAnalysisOutcome {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                continuation.resume(returning: outcome)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    func resolve(_ outcome: WatchAnalysisOutcome) {
+        lock.lock()
+        guard self.outcome == nil else {
+            lock.unlock()
+            return
+        }
+        self.outcome = outcome
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: outcome)
+    }
+}
+
+private struct WatchAnalysisTimeoutError: LocalizedError {
+    let timeout: TimeInterval
+
+    var errorDescription: String? {
+        let seconds = max(1, Int(timeout.rounded()))
+        return "Tick analysis took longer than \(seconds) seconds. Try again or select the BPH manually."
+    }
+}
+
 @MainActor
 final class MeasurementViewModel: ObservableObject {
     @Published var selectedBPH: BeatRateSelection = .auto
@@ -32,6 +90,8 @@ final class MeasurementViewModel: ObservableObject {
     }
 
     private let audioMeter: any WatchAudioMetering
+    private let analysisOperation: WatchAnalysisOperation
+    private let analysisTimeout: TimeInterval
     let measurementDuration: TimeInterval
     private var timerTask: Task<Void, Never>?
     private var measurementTask: Task<Void, Never>?
@@ -42,9 +102,13 @@ final class MeasurementViewModel: ObservableObject {
     private var measurementGeneration = 0
 
     init(audioMeter: any WatchAudioMetering = AudioWatchMeter(),
-         measurementDuration: TimeInterval = 60) {
+         measurementDuration: TimeInterval = 60,
+         analysisTimeout: TimeInterval = 30,
+         analysisOperation: WatchAnalysisOperation? = nil) {
         self.audioMeter = audioMeter
         self.measurementDuration = measurementDuration
+        self.analysisTimeout = analysisTimeout
+        self.analysisOperation = analysisOperation ?? defaultWatchAnalysisOperation
     }
 
     func startMeasurement() {
@@ -87,7 +151,7 @@ final class MeasurementViewModel: ObservableObject {
 
             try await waitForMeasurementDuration(generation: generation)
             try Task.checkCancellation()
-            await finishMeasurement(selectedBPH: selectedBPH, generation: generation)
+            try await finishMeasurement(selectedBPH: selectedBPH, generation: generation)
         } catch is CancellationError {
             cancelTimer()
             if generation == measurementGeneration {
@@ -142,7 +206,7 @@ final class MeasurementViewModel: ObservableObject {
         cancelMeasurement()
     }
 
-    private func finishMeasurement(selectedBPH: BeatRateSelection, generation: Int) async {
+    private func finishMeasurement(selectedBPH: BeatRateSelection, generation: Int) async throws {
         cancelTimer()
         guard !Task.isCancelled, generation == measurementGeneration else {
             if generation == measurementGeneration {
@@ -159,14 +223,8 @@ final class MeasurementViewModel: ObservableObject {
                                    routeDescription: audioMeter.routeDescription,
                                    routeWarning: audioMeter.routeWarning)
 
-        let result = await Task.detached(priority: .userInitiated) {
-            switch selectedBPH {
-            case .auto:
-                WatchDSP.analyzeAuto(capture: capture)
-            case .manual(let beatRate):
-                WatchDSP.analyze(capture: capture, selectedBPH: beatRate.rawValue)
-            }
-        }.value
+        let result = try await analyzeWithDeadline(capture: capture,
+                                                   selectedBPH: selectedBPH)
 
         guard !Task.isCancelled, generation == measurementGeneration else {
             if generation == measurementGeneration {
@@ -181,6 +239,49 @@ final class MeasurementViewModel: ObservableObject {
         exportStatusText = nil
         measurementTask = nil
         state = .result(result)
+    }
+
+    private func analyzeWithDeadline(
+        capture: AudioCapture,
+        selectedBPH: BeatRateSelection
+    ) async throws -> WatchMeasurementResult {
+        let completion = WatchAnalysisCompletion()
+        let operation = analysisOperation
+        let timeout = max(0, analysisTimeout)
+        let timeoutNanoseconds = UInt64(min(timeout * 1_000_000_000,
+                                            Double(UInt64.max)))
+
+        let analysisTask = Task.detached(priority: .userInitiated) {
+            let result = operation(capture, selectedBPH)
+            completion.resolve(.result(result))
+        }
+        let timeoutTask = Task.detached {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+                completion.resolve(.timedOut)
+            } catch {
+                // Cancellation means analysis completed before the deadline.
+            }
+        }
+
+        let outcome = await withTaskCancellationHandler {
+            await completion.wait()
+        } onCancel: {
+            completion.resolve(.cancelled)
+        }
+
+        switch outcome {
+        case .result(let result):
+            timeoutTask.cancel()
+            return result
+        case .timedOut:
+            analysisTask.cancel()
+            throw WatchAnalysisTimeoutError(timeout: timeout)
+        case .cancelled:
+            analysisTask.cancel()
+            timeoutTask.cancel()
+            throw CancellationError()
+        }
     }
 
     func exportLastMeasurement() {

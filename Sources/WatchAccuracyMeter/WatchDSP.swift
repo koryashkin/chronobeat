@@ -1,6 +1,6 @@
 import Foundation
 
-enum BeatRate: Int, CaseIterable, Identifiable {
+enum BeatRate: Int, CaseIterable, Identifiable, Sendable {
     case bph18000 = 18_000
     case bph19800 = 19_800
     case bph21600 = 21_600
@@ -12,7 +12,7 @@ enum BeatRate: Int, CaseIterable, Identifiable {
     var label: String { "\(rawValue) bph" }
 }
 
-enum BeatRateSelection: Hashable, Identifiable, CaseIterable {
+enum BeatRateSelection: Hashable, Identifiable, CaseIterable, Sendable {
     case auto
     case manual(BeatRate)
 
@@ -69,7 +69,7 @@ extension MeasurementState {
     }
 }
 
-enum SignalQuality: String, Equatable {
+enum SignalQuality: String, Equatable, Sendable {
     case high
     case medium
     case low
@@ -83,7 +83,7 @@ enum SignalQuality: String, Equatable {
     }
 }
 
-struct WatchMeasurementResult {
+struct WatchMeasurementResult: Sendable {
     let selectedBPH: Int
     let isAutoBPH: Bool
     let detectedBPH: Double
@@ -606,11 +606,20 @@ enum WatchDSP {
 
     private struct PeakDetectionContext {
         let envelope: [Float]
-        let localNoiseFloor: [Float]
         let median: Float
-        let p90: Float
         let p95: Float
-        let p99: Float
+        let candidatesByThreshold: [ThresholdPeakCandidates]
+    }
+
+    private struct ThresholdPeakCandidates {
+        let thresholdScale: Float
+        let threshold: Float
+        let peaks: [PeakCandidate]
+    }
+
+    private struct PeakCandidate {
+        let triggerIndex: Int
+        let refinedIndex: Int
     }
 
     private static func makePeakDetectionContext(
@@ -618,13 +627,77 @@ enum WatchDSP {
         sampleRate: Double
     ) -> PeakDetectionContext {
         let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
+        let median = percentile(sortedSample, 0.50)
+        let p90 = percentile(sortedSample, 0.90)
+        let p95 = percentile(sortedSample, 0.95)
+        let p99 = percentile(sortedSample, 0.99)
+        let baseThreshold = adaptiveThreshold(median: median,
+                                              p90: p90,
+                                              p95: p95,
+                                              p99: p99)
+        let localNoiseFloor = movingAverage(envelope,
+                                            window: max(16, Int(sampleRate * 0.10)))
+        let candidates = extractPeakCandidates(envelope: envelope,
+                                               localNoiseFloor: localNoiseFloor,
+                                               sampleRate: sampleRate,
+                                               baseThreshold: baseThreshold)
         return PeakDetectionContext(envelope: envelope,
-                                    localNoiseFloor: movingAverage(envelope,
-                                                                   window: max(16, Int(sampleRate * 0.10))),
-                                    median: percentile(sortedSample, 0.50),
-                                    p90: percentile(sortedSample, 0.90),
-                                    p95: percentile(sortedSample, 0.95),
-                                    p99: percentile(sortedSample, 0.99))
+                                    median: median,
+                                    p95: p95,
+                                    candidatesByThreshold: candidates)
+    }
+
+    private static func extractPeakCandidates(
+        envelope: [Float],
+        localNoiseFloor: [Float],
+        sampleRate: Double,
+        baseThreshold: Float
+    ) -> [ThresholdPeakCandidates] {
+        guard envelope.count > 3 else {
+            return thresholdScales.map {
+                ThresholdPeakCandidates(thresholdScale: $0,
+                                        threshold: baseThreshold * $0,
+                                        peaks: [])
+            }
+        }
+
+        let thresholds = thresholdScales.map { baseThreshold * $0 }
+        var candidatesByThreshold = Array(repeating: [PeakCandidate](), count: thresholds.count)
+        let radius = max(2, Int(sampleRate * 0.002))
+
+        for index in 1..<(envelope.count - 1) {
+            let value = envelope[index]
+            guard value >= envelope[index - 1], value > envelope[index + 1] else { continue }
+
+            let localThreshold = localNoiseFloor[index] * 1.18
+            guard thresholds.indices.contains(where: {
+                value > max(thresholds[$0], localThreshold)
+            }) else {
+                continue
+            }
+
+            let start = max(1, index - radius)
+            let end = min(envelope.count - 2, index + radius)
+            var bestIndex = index
+            var bestValue = value
+            for neighbor in start...end where envelope[neighbor] > bestValue {
+                bestValue = envelope[neighbor]
+                bestIndex = neighbor
+            }
+
+            for thresholdIndex in thresholds.indices
+            where value > max(thresholds[thresholdIndex], localThreshold) {
+                candidatesByThreshold[thresholdIndex].append(
+                    PeakCandidate(triggerIndex: index, refinedIndex: bestIndex)
+                )
+            }
+        }
+
+        return thresholds.indices.map { index in
+            ThresholdPeakCandidates(thresholdScale: thresholdScales[index],
+                                    threshold: thresholds[index],
+                                    peaks: candidatesByThreshold[index])
+        }
     }
 
     private struct PeakDetectionResult {
@@ -731,45 +804,24 @@ enum WatchDSP {
             return PeakDetectionResult(peaks: [], stats: .empty)
         }
 
-        let threshold = adaptiveThreshold(median: context.median,
-                                          p90: context.p90,
-                                          p95: context.p95,
-                                          p99: context.p99) * thresholdScale
+        guard let candidates = context.candidatesByThreshold.first(where: {
+            $0.thresholdScale == thresholdScale
+        }) else {
+            return PeakDetectionResult(peaks: [], stats: .empty)
+        }
 
         let minDistance = Int(sampleRate * expectedPeriod * 0.45)
         var peaks: [Double] = []
         var lastPeakIndex = -minDistance
 
-        var i = 1
-        while i < envelope.count - 1 {
-            let value = envelope[i]
-            let localThreshold = max(threshold, context.localNoiseFloor[i] * 1.18)
-            if value > localThreshold,
-               value >= envelope[i - 1],
-               value > envelope[i + 1],
-               i - lastPeakIndex >= minDistance {
-
-                // Local refinement: choose max in a small neighborhood.
-                let radius = max(2, Int(sampleRate * 0.002))
-                let start = max(1, i - radius)
-                let end = min(envelope.count - 2, i + radius)
-                var bestIndex = i
-                var bestValue = value
-                for j in start...end where envelope[j] > bestValue {
-                    bestValue = envelope[j]
-                    bestIndex = j
-                }
-
-                peaks.append(Double(bestIndex) / sampleRate)
-                lastPeakIndex = bestIndex
-                i = bestIndex + minDistance
-            } else {
-                i += 1
-            }
+        for candidate in candidates.peaks
+        where candidate.triggerIndex - lastPeakIndex >= minDistance {
+            peaks.append(Double(candidate.refinedIndex) / sampleRate)
+            lastPeakIndex = candidate.refinedIndex
         }
 
         let stats = PeakDetectionStats(candidatePeakCount: peaks.count,
-                                       threshold: Double(threshold),
+                                       threshold: Double(candidates.threshold),
                                        thresholdScale: Double(thresholdScale),
                                        envelopeMedian: Double(context.median),
                                        envelopeP95: Double(context.p95),
