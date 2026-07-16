@@ -688,6 +688,34 @@ final class MeasurementViewModelAudioTests: XCTestCase {
         XCTAssertEqual(result.sampleCount, samples.count)
     }
 
+    func testFullDurationAutoMeasurementLeavesAnalyzingState() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: -7,
+                                                duration: 60)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeDescription: "Full-duration synthetic microphone")
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01)
+        viewModel.selectedBPH = .auto
+
+        viewModel.startMeasurement()
+
+        try await waitUntil(timeout: 15) {
+            if case .result = viewModel.state { return true }
+            return false
+        }
+
+        guard case .result(let result) = viewModel.state else {
+            return XCTFail("Expected Auto BPH analysis to leave the analyzing state.")
+        }
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.sampleCount, samples.count)
+        XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+    }
+
     func testInjectedAudioUpdatesCaptureStatusWithoutRealMicrophone() async throws {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 0)
         let audioMeter = FakeAudioMeter(samples: samples, sampleRate: sampleRate)
