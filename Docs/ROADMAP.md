@@ -25,6 +25,17 @@
 - better retry guidance
 - optional estimated beat error when confidence is high
 
+## v0.4 — experimental motion-assisted recognition
+
+- capture raw Core Motion accelerometer samples alongside microphone audio
+- support an optional physical-contact mode with the watch caseback touching the iPhone
+- synchronize accelerometer timestamps with the audio capture timeline
+- export motion samples and diagnostics with debug captures
+- detect motion periodicity independently and add synthetic motion regression tests
+- validate across labeled physical-device recordings before motion affects confidence
+- use motion only to confirm or reject audio results, never as a microphone replacement
+- keep audio-only behavior unchanged when motion data is unavailable or inconclusive
+
 ## Not before v1
 
 - amplitude
