@@ -1009,6 +1009,62 @@ private final class FakeAudioMeter: WatchAudioMetering, @unchecked Sendable {
     }
 }
 
+final class AudioCaptureRouteChangePolicyTests: XCTestCase {
+    private let builtInBottomMic = AudioInputRouteIdentity(portUID: "built-in-mic",
+                                                           portType: "MicrophoneBuiltIn")
+
+    func testBenignRouteNotificationIsIgnoredWhenInputIsUnchanged() {
+        let shouldFail = AudioCaptureRouteChangePolicy.shouldFailCapture(
+            expectedRoute: builtInBottomMic,
+            currentRoute: builtInBottomMic,
+            engineIsRunning: false,
+            event: .route
+        )
+
+        XCTAssertFalse(shouldFail)
+    }
+
+    func testBenignEngineNotificationIsIgnoredWhileCaptureIsRunning() {
+        let shouldFail = AudioCaptureRouteChangePolicy.shouldFailCapture(
+            expectedRoute: builtInBottomMic,
+            currentRoute: builtInBottomMic,
+            engineIsRunning: true,
+            event: .engineConfiguration
+        )
+
+        XCTAssertFalse(shouldFail)
+    }
+
+    func testChangedMicrophoneInputFailsCapture() {
+        let changedRoute = AudioInputRouteIdentity(portUID: "wired-headset",
+                                                   portType: "MicrophoneWired")
+
+        let shouldFail = AudioCaptureRouteChangePolicy.shouldFailCapture(
+            expectedRoute: builtInBottomMic,
+            currentRoute: changedRoute,
+            engineIsRunning: true,
+            event: .route
+        )
+
+        XCTAssertTrue(shouldFail)
+    }
+
+    func testStoppedEngineOrMissingInputFailsCapture() {
+        XCTAssertTrue(AudioCaptureRouteChangePolicy.shouldFailCapture(
+            expectedRoute: builtInBottomMic,
+            currentRoute: builtInBottomMic,
+            engineIsRunning: false,
+            event: .engineConfiguration
+        ))
+        XCTAssertTrue(AudioCaptureRouteChangePolicy.shouldFailCapture(
+            expectedRoute: builtInBottomMic,
+            currentRoute: nil,
+            engineIsRunning: true,
+            event: .route
+        ))
+    }
+}
+
 final class DomainModelTests: XCTestCase {
     func testBeatRateCasesExposeExpectedLabelsAndIds() {
         XCTAssertEqual(BeatRate.allCases.map(\.rawValue),
