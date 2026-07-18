@@ -166,6 +166,11 @@ enum WatchDSP {
         static let autoAmbiguousMargin = 0.04
         static let autoMaximumOutlierRatio = 0.62
         static let autoMinimumPeriodicity = 0.50
+        static let autoLongCaptureMinimumDuration = 45.0
+        static let autoLongCaptureMinimumWindowCount = 8
+        static let autoLongCaptureMinimumWindowRatio = 0.90
+        static let autoLongCaptureMinimumScoreMargin = 0.020
+        static let autoLongCaptureMinimumEvidenceLead = 0.025
         static let minimumConfidentRecall = 0.70
         static let minimumSuccessfulWindowRatio = 0.70
         static let minimumWindowRecall = 0.60
@@ -247,13 +252,9 @@ enum WatchDSP {
 
         // Every supported beat rate was evaluated against the same prepared signal,
         // so the winner and margin already provide the competing-rate verification.
-        let bestScore = autoBeatRateScore(best)
-        let secondScore = sortedCandidates.dropFirst().first.map(autoBeatRateScore) ?? 0
-        let isAmbiguous = autoSelectionIsAmbiguous(bestScore: bestScore,
-                                                   secondScore: secondScore,
-                                                   verifiedQuality: best.quality,
-                                                   outlierRatio: best.outlierRatio,
-                                                   periodicityScore: best.periodicityScore)
+        let second = sortedCandidates.dropFirst().first
+        let isAmbiguous = autoSelectionIsAmbiguous(best: best,
+                                                   second: second)
 
         if isAmbiguous {
             return replacing(result: best,
@@ -1387,6 +1388,46 @@ enum WatchDSP {
             || margin < DSPConfiguration.autoAmbiguousMargin
             || outlierRatio > DSPConfiguration.autoMaximumOutlierRatio
             || periodicityScore < DSPConfiguration.autoMinimumPeriodicity
+    }
+
+    static func autoSelectionIsAmbiguous(
+        best: WatchMeasurementResult,
+        second: WatchMeasurementResult?
+    ) -> Bool {
+        let bestScore = autoBeatRateScore(best)
+        let secondScore = second.map(autoBeatRateScore) ?? 0
+        guard autoSelectionIsAmbiguous(bestScore: bestScore,
+                                       secondScore: secondScore,
+                                       verifiedQuality: best.quality,
+                                       outlierRatio: best.outlierRatio,
+                                       periodicityScore: best.periodicityScore) else {
+            return false
+        }
+
+        guard let second,
+              best.quality != .low,
+              bestScore >= DSPConfiguration.autoMinimumScore,
+              best.outlierRatio <= DSPConfiguration.autoMaximumOutlierRatio,
+              best.periodicityScore >= DSPConfiguration.autoMinimumPeriodicity else {
+            return true
+        }
+
+        let duration = best.sampleRate > 0
+            ? Double(best.sampleCount) / best.sampleRate
+            : 0
+        let successfulWindowRatio = best.analysisWindowCount > 0
+            ? Double(best.successfulWindowCount) / Double(best.analysisWindowCount)
+            : 0
+        let hasLongCaptureConsensus = duration >= DSPConfiguration.autoLongCaptureMinimumDuration
+            && best.analysisWindowCount >= DSPConfiguration.autoLongCaptureMinimumWindowCount
+            && successfulWindowRatio >= DSPConfiguration.autoLongCaptureMinimumWindowRatio
+            && bestScore - secondScore >= DSPConfiguration.autoLongCaptureMinimumScoreMargin
+            && best.beatCoverage - second.beatCoverage >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && best.tickRecallEstimate - second.tickRecallEstimate >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && best.periodicityScore - second.periodicityScore >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && second.outlierRatio - best.outlierRatio >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+
+        return !hasLongCaptureConsensus
     }
 
     private static func recognitionConfidence(

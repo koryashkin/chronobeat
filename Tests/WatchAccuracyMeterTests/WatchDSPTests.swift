@@ -258,23 +258,47 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
     }
 
+    func testDifficultTudorTrimRemainsAmbiguousWithoutLongCaptureConsensus() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-30-60s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Difficult Tudor GMT fixture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .ambiguousBeatRate)
+    }
+
+    func testTudorFullDeviceCaptureAutoDetectsBeatRateEndToEnd() throws {
+        let fixture = try loadFullTudorDeviceCapture()
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor GMT full device capture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertEqual(result.quality, .medium)
+        XCTAssertNil(result.dominantFailureReason)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
+        XCTAssertGreaterThanOrEqual(result.successfulWindowCount,
+                                    Int(ceil(Double(result.analysisWindowCount) * 0.90)))
+    }
+
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
-        let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
-        var samples: [Float] = []
-        samples.reserveCapacity(fixture.samples.count * 3)
-        for _ in 0..<3 {
-            samples.append(contentsOf: fixture.samples)
-        }
+        let fixture = try loadFullTudorDeviceCapture()
 
         let start = ProcessInfo.processInfo.systemUptime
-        let result = WatchDSP.analyzeAuto(samples: samples,
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
                                           sampleRate: fixture.sampleRate,
-                                          routeDescription: "60-second noisy Tudor fixture")
+                                          routeDescription: "Tudor GMT performance fixture")
         let elapsed = ProcessInfo.processInfo.systemUptime - start
 
         XCTAssertLessThan(elapsed, 30, "Auto BPH post-processing exceeded the 30-second requirement.")
         XCTAssertTrue(result.isAutoBPH)
-        XCTAssertEqual(result.sampleCount, samples.count)
+        XCTAssertEqual(result.sampleCount, fixture.samples.count)
     }
 
     func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
@@ -567,6 +591,21 @@ final class WatchDSPTests: XCTestCase {
         }
 
         return (samples, format.sampleRate)
+    }
+
+    private func loadFullTudorDeviceCapture() throws -> (samples: [Float], sampleRate: Double) {
+        let firstHalf = try loadFixture(named: "tudor-gmt-28800-0-30s")
+        let secondHalf = try loadFixture(named: "tudor-gmt-28800-30-60s")
+        XCTAssertEqual(firstHalf.sampleRate, secondHalf.sampleRate)
+
+        let halfDurationSampleCount = Int((30 * firstHalf.sampleRate).rounded())
+        XCTAssertEqual(firstHalf.samples.count, halfDurationSampleCount)
+        XCTAssertEqual(secondHalf.samples.count, halfDurationSampleCount)
+
+        var samples = firstHalf.samples
+        samples.append(contentsOf: secondHalf.samples)
+        XCTAssertEqual(samples.count, halfDurationSampleCount * 2)
+        return (samples, firstHalf.sampleRate)
     }
 
     private struct LabeledFixture {
