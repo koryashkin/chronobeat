@@ -185,6 +185,8 @@ struct ResultView: View {
                 Text("Outlier ratio: \(String(format: "%.1f", result.outlierRatio * 100))%")
                 Text("Periodicity: \(String(format: "%.2f", result.periodicityScore))")
                 Text("High-band periodicity: \(String(format: "%.2f", result.spectralPeriodicityScore))")
+                Text("Two-beat periodicity: \(String(format: "%.2f", result.alternatingSpectralPeriodicityScore))")
+                Text("Alternating tick/tock consensus: \(result.alternatingSpectralConsensus >= 1 ? "Yes" : "No")")
                 Text("Recognition confidence: \(String(format: "%.1f", result.recognitionConfidence * 100))%")
                 Text("Tick recall estimate: \(String(format: "%.1f", result.tickRecallEstimate * 100))%")
                 Text("Windows: \(result.successfulWindowCount) / \(result.analysisWindowCount)")

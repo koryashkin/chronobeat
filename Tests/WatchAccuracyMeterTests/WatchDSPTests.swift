@@ -297,6 +297,80 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(strongestScore, 0.05)
     }
 
+    func testAlternatingSpectralConsensusIdentifiesKingSeikoBeatRate() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: fixture.samples,
+            sampleRate: fixture.sampleRate
+        )
+        let alternatingPeriodicity = WatchDSP.autoAlternatingSpectralPeriodicityScores(
+            samples: fixture.samples,
+            sampleRate: fixture.sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "King Seiko alternating consensus")
+
+        let selectedAlternatingScore = try XCTUnwrap(alternatingPeriodicity[selectedBPH])
+        let strongestWrongScore = try XCTUnwrap(alternatingPeriodicity
+            .filter { $0.key != selectedBPH }
+            .map(\.value)
+            .max())
+        XCTAssertGreaterThanOrEqual(selectedAlternatingScore, 0.03)
+        XCTAssertGreaterThanOrEqual(selectedAlternatingScore - strongestWrongScore, 0.025)
+        XCTAssertEqual(consensus[selectedBPH], 1)
+        XCTAssertTrue(consensus
+            .filter { $0.key != selectedBPH }
+            .allSatisfy { $0.value == 0 })
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.alternatingSpectralPeriodicityScore,
+                       selectedAlternatingScore,
+                       accuracy: 0.000_001)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 1)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
+    func testRandomHighFrequencyImpulsesDoNotCreateAlternatingConsensus() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 20))
+        addWhiteNoise(to: &samples, amplitude: 0.0005, seed: 0xA17E)
+        addImpulseNoise(to: &samples, count: 600, amplitude: 0.08, seed: 0xB17E)
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: samples,
+            sampleRate: sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Random high-frequency impulses")
+
+        XCTAssertTrue(consensus.values.allSatisfy { $0 == 0 })
+        XCTAssertEqual(result.quality, .low)
+    }
+
+    func testAlternatingSpectralConsensusCannotPromoteModulatedNoiseGrid() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 20))
+        for index in samples.indices {
+            let time = Double(index) / sampleRate
+            let modulation = max(0, sin(2 * Double.pi * 4 * time))
+            samples[index] = Float(sin(2 * Double.pi * 12_000 * time) * modulation * 0.02)
+        }
+        addWhiteNoise(to: &samples, amplitude: 0.0005, seed: 0x4)
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: samples,
+            sampleRate: sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Amplitude-modulated noise")
+
+        XCTAssertEqual(consensus[selectedBPH], 1)
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
+    }
+
     func testStationaryHighFrequencyNoiseDoesNotCreateAutoBeatRate() {
         var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
         addSine(to: &samples, frequency: 12_000, amplitude: 0.02)
@@ -456,6 +530,8 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(json?["routeDescription"] as? String, "Synthetic microphone")
         XCTAssertNotNil(json?["recognitionConfidence"])
         XCTAssertNotNil(json?["spectralPeriodicityScore"])
+        XCTAssertNotNil(json?["alternatingSpectralPeriodicityScore"])
+        XCTAssertNotNil(json?["alternatingSpectralConsensus"])
 
         let traceData = try Data(contentsOf: export.candidateTraceURL)
         let trace = try JSONDecoder().decode(TickCandidateTrace.self, from: traceData)
@@ -1428,6 +1504,8 @@ final class DomainModelTests: XCTestCase {
                                estimatedSnrDb: 12,
                                periodicityScore: quality == .high ? 1 : 0,
                                spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: quality == .high ? 1 : 0,
                                tickRecallEstimate: quality == .high ? 1 : 0,
                                analysisWindowCount: quality == .high ? 10 : 0,
@@ -1481,6 +1559,8 @@ final class MeasurementStateTests: XCTestCase {
                                estimatedSnrDb: 12,
                                periodicityScore: 1,
                                spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: 1,
                                tickRecallEstimate: 1,
                                analysisWindowCount: 10,

@@ -29,6 +29,7 @@
 
 - add a versioned real-capture benchmark manifest
 - use independent high-band periodicity to resolve strong Auto-BPH evidence
+- use guarded two-beat tick/tock consensus for alternating escapement transients
 - evaluate a multi-band candidate detector on additional quiet watches
 - collect and label tick/noise candidate snippets
 - train a small custom Core ML candidate verifier

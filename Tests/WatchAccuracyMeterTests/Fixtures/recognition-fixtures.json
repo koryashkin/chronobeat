@@ -6,7 +6,7 @@
       "sourceCaptureID": "king-seiko-device-20260709",
       "knownBPH": 28800,
       "durationSeconds": 20,
-      "expectedAutoOutcome": "reject"
+      "expectedAutoOutcome": "recognize"
     },
     {
       "resourceName": "iphone-bottom-28800-0-20s",

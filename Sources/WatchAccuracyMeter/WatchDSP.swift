@@ -102,6 +102,8 @@ struct WatchMeasurementResult: Sendable {
     let estimatedSnrDb: Double
     let periodicityScore: Double
     let spectralPeriodicityScore: Double
+    let alternatingSpectralPeriodicityScore: Double
+    let alternatingSpectralConsensus: Double
     let recognitionConfidence: Double
     let tickRecallEstimate: Double
     let analysisWindowCount: Int
@@ -216,6 +218,12 @@ enum WatchDSP {
         static let autoSpectralMinimumUsefulPeriodicity = 0.12
         static let autoSpectralFullStrengthPeriodicity = 0.50
         static let autoSpectralMaximumScoreBoost = 0.08
+        static let autoAlternatingWindowDuration = 5.0
+        static let autoAlternatingMinimumWindowCount = 3
+        static let autoAlternatingMinimumWindowPeriodicity = 0.005
+        static let autoAlternatingMinimumWindowMargin = 0.010
+        static let autoAlternatingMinimumFullPeriodicity = 0.030
+        static let autoAlternatingMinimumFullMargin = 0.025
     }
 
     private enum CandidateTraceConfiguration {
@@ -239,6 +247,12 @@ enum WatchDSP {
     private struct AutoCandidate {
         let result: WatchMeasurementResult
         let score: Double
+    }
+
+    private struct AutoSpectralEvidence {
+        let periodicityScores: [Int: Double]
+        let alternatingPeriodicityScores: [Int: Double]
+        let alternatingConsensusScores: [Int: Double]
     }
 
     static func analyzeAuto(capture: AudioCapture) -> WatchMeasurementResult {
@@ -277,18 +291,24 @@ enum WatchDSP {
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
                                        audioStats: audioStats)
-        let spectralPeriodicity = autoSpectralPeriodicityScores(samples: samples,
-                                                                sampleRate: sampleRate)
+        let spectralEvidence = autoSpectralEvidence(samples: samples,
+                                                    sampleRate: sampleRate)
         let candidates = BeatRate.allCases.map { beatRate in
-            let periodicity = spectralPeriodicity[beatRate.rawValue] ?? 0
+            let periodicity = spectralEvidence.periodicityScores[beatRate.rawValue] ?? 0
+            let alternatingPeriodicity = spectralEvidence.alternatingPeriodicityScores[beatRate.rawValue] ?? 0
+            let alternatingConsensus = spectralEvidence.alternatingConsensusScores[beatRate.rawValue] ?? 0
             let analyzed = analyze(prepared: prepared,
                                    selectedBPH: beatRate.rawValue,
                                    checksCompetingBeatRates: false,
                                    isAutoBPH: true)
             let result = replacing(result: analyzed,
-                                   spectralPeriodicityScore: periodicity)
+                                   spectralPeriodicityScore: periodicity,
+                                   alternatingSpectralPeriodicityScore: alternatingPeriodicity,
+                                   alternatingSpectralConsensus: alternatingConsensus)
             let score = autoBeatRateScore(result)
-                + autoSpectralScoreBoost(periodicity: periodicity)
+                + max(autoSpectralScoreBoost(periodicity: periodicity),
+                      autoAlternatingScoreBoost(consensus: alternatingConsensus,
+                                                result: result))
             return AutoCandidate(result: result, score: min(1, score))
         }
         let sortedCandidates = candidates.sorted { lhs, rhs in
@@ -734,6 +754,8 @@ enum WatchDSP {
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
                                       spectralPeriodicityScore: 0,
+                                      alternatingSpectralPeriodicityScore: 0,
+                                      alternatingSpectralConsensus: 0,
                                       recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
                                       tickRecallEstimate: tickRecallEstimate,
                                       analysisWindowCount: fit.analysisWindowCount,
@@ -778,6 +800,8 @@ enum WatchDSP {
                                estimatedSnrDb: detectionStats.estimatedSnrDb,
                                periodicityScore: 0,
                                spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: 0,
                                tickRecallEstimate: 0,
                                analysisWindowCount: 0,
@@ -841,12 +865,44 @@ enum WatchDSP {
         samples: [Float],
         sampleRate: Double
     ) -> [Int: Double] {
-        guard samples.count > Int(sampleRate * 10), sampleRate > 0 else { return [:] }
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).periodicityScores
+    }
+
+    static func autoAlternatingSpectralConsensusScores(
+        samples: [Float],
+        sampleRate: Double
+    ) -> [Int: Double] {
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).alternatingConsensusScores
+    }
+
+    static func autoAlternatingSpectralPeriodicityScores(
+        samples: [Float],
+        sampleRate: Double
+    ) -> [Int: Double] {
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).alternatingPeriodicityScores
+    }
+
+    private static func autoSpectralEvidence(
+        samples: [Float],
+        sampleRate: Double
+    ) -> AutoSpectralEvidence {
+        guard samples.count > Int(sampleRate * 10), sampleRate > 0 else {
+            return AutoSpectralEvidence(periodicityScores: [:],
+                                        alternatingPeriodicityScores: [:],
+                                        alternatingConsensusScores: [:])
+        }
 
         let nyquist = sampleRate * 0.5
         let highPass = min(DSPConfiguration.autoSpectralHighPassHz, nyquist * 0.50)
         let lowPass = min(DSPConfiguration.autoSpectralLowPassHz, nyquist * 0.90)
-        guard highPass > 0, lowPass > highPass else { return [:] }
+        guard highPass > 0, lowPass > highPass else {
+            return AutoSpectralEvidence(periodicityScores: [:],
+                                        alternatingPeriodicityScores: [:],
+                                        alternatingConsensusScores: [:])
+        }
 
         let highPassRC = 1.0 / (2.0 * Double.pi * highPass)
         let lowPassRC = 1.0 / (2.0 * Double.pi * lowPass)
@@ -907,7 +963,7 @@ enum WatchDSP {
 
         let correlationStride = max(1, Int((sampleRate / 6_000).rounded()))
         let ignoredStart = min(transients.count, Int(sampleRate))
-        return Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+        let singlePeriodScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
             let lag = Int((sampleRate * 3_600 / Double(beatRate.rawValue)).rounded())
             let score = laggedCorrelation(transients,
                                           lag: lag,
@@ -915,18 +971,76 @@ enum WatchDSP {
                                           stride: correlationStride)
             return (beatRate.rawValue, score)
         })
+        let alternatingPeriodScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+            let lag = Int((sampleRate * 7_200 / Double(beatRate.rawValue)).rounded())
+            let score = laggedCorrelation(transients,
+                                          lag: lag,
+                                          startIndex: ignoredStart,
+                                          stride: correlationStride)
+            return (beatRate.rawValue, score)
+        })
+        let windowFrameCount = max(
+            1,
+            Int((sampleRate * DSPConfiguration.autoAlternatingWindowDuration).rounded())
+        )
+        var windowCount = 0
+        var windowWins = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { ($0.rawValue, 0) })
+        var windowStart = 0
+        while windowStart + windowFrameCount <= transients.count {
+            let windowEnd = windowStart + windowFrameCount
+            let ranked = BeatRate.allCases.map { beatRate -> (bph: Int, score: Double) in
+                let lag = Int((sampleRate * 7_200 / Double(beatRate.rawValue)).rounded())
+                let score = laggedCorrelation(transients,
+                                              lag: lag,
+                                              startIndex: windowStart,
+                                              endIndex: windowEnd,
+                                              stride: correlationStride)
+                return (beatRate.rawValue, score)
+            }.sorted { $0.score > $1.score }
+
+            windowCount += 1
+            if let winner = ranked.first {
+                let runnerUpScore = ranked.dropFirst().first?.score ?? 0
+                if winner.score >= DSPConfiguration.autoAlternatingMinimumWindowPeriodicity,
+                   winner.score - runnerUpScore >= DSPConfiguration.autoAlternatingMinimumWindowMargin {
+                    windowWins[winner.bph, default: 0] += 1
+                }
+            }
+            windowStart += windowFrameCount
+        }
+
+        let consensusScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+            let bph = beatRate.rawValue
+            let fullScore = alternatingPeriodScores[bph] ?? 0
+            let strongestWrongScore = alternatingPeriodScores
+                .filter { $0.key != bph }
+                .map(\.value)
+                .max() ?? 0
+            let wins = windowWins[bph, default: 0]
+            let hasConsensus = windowCount >= DSPConfiguration.autoAlternatingMinimumWindowCount
+                && wins == windowCount
+                && fullScore >= DSPConfiguration.autoAlternatingMinimumFullPeriodicity
+                && fullScore - strongestWrongScore >= DSPConfiguration.autoAlternatingMinimumFullMargin
+            return (bph, hasConsensus ? 1.0 : 0.0)
+        })
+
+        return AutoSpectralEvidence(periodicityScores: singlePeriodScores,
+                                    alternatingPeriodicityScores: alternatingPeriodScores,
+                                    alternatingConsensusScores: consensusScores)
     }
 
     private static func laggedCorrelation(
         _ values: [Float],
         lag: Int,
         startIndex: Int,
+        endIndex: Int? = nil,
         stride: Int
     ) -> Double {
+        let end = min(endIndex ?? values.count, values.count)
         guard lag > 0,
               stride > 0,
               startIndex >= 0,
-              startIndex + lag < values.count else {
+              startIndex + lag < end else {
             return 0
         }
 
@@ -937,7 +1051,7 @@ enum WatchDSP {
         var sumYY = 0.0
         var sumXY = 0.0
         var index = startIndex
-        while index + lag < values.count {
+        while index + lag < end {
             let x = Double(values[index])
             let y = Double(values[index + lag])
             count += 1
@@ -965,6 +1079,14 @@ enum WatchDSP {
         guard fullStrength > minimum else { return 0 }
         let normalized = max(0, min(1, (periodicity - minimum) / (fullStrength - minimum)))
         return normalized * DSPConfiguration.autoSpectralMaximumScoreBoost
+    }
+
+    private static func autoAlternatingScoreBoost(
+        consensus: Double,
+        result: WatchMeasurementResult
+    ) -> Double {
+        guard result.quality != .low, consensus >= 1 else { return 0 }
+        return DSPConfiguration.autoSpectralMaximumScoreBoost
     }
 
     private static func makeEnvelope(_ input: [Float], sampleRate: Double) -> [Float] {
@@ -1918,6 +2040,8 @@ enum WatchDSP {
         qualityScore: Double? = nil,
         recognitionConfidence: Double? = nil,
         spectralPeriodicityScore: Double? = nil,
+        alternatingSpectralPeriodicityScore: Double? = nil,
+        alternatingSpectralConsensus: Double? = nil,
         dominantFailureReason: RecognitionIssue? = nil,
         isAutoBPH: Bool? = nil
     ) -> WatchMeasurementResult {
@@ -1939,6 +2063,8 @@ enum WatchDSP {
                                estimatedSnrDb: result.estimatedSnrDb,
                                periodicityScore: result.periodicityScore,
                                spectralPeriodicityScore: spectralPeriodicityScore ?? result.spectralPeriodicityScore,
+                               alternatingSpectralPeriodicityScore: alternatingSpectralPeriodicityScore ?? result.alternatingSpectralPeriodicityScore,
+                               alternatingSpectralConsensus: alternatingSpectralConsensus ?? result.alternatingSpectralConsensus,
                                recognitionConfidence: recognitionConfidence ?? result.recognitionConfidence,
                                tickRecallEstimate: result.tickRecallEstimate,
                                analysisWindowCount: result.analysisWindowCount,

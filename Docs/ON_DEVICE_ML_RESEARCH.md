@@ -119,16 +119,16 @@ failure modes and does not estimate product accuracy.
 
 | Real fixture | Known BPH | Auto result | Quality | Outcome |
 | --- | ---: | ---: | --- | --- |
-| King Seiko, 20 s | 28,800 | 25,200 | Low, ambiguous | Fail |
+| King Seiko, 20 s | 28,800 | 28,800 | Medium | Pass |
 | iPhone bottom mic, 20 s | 28,800 | 28,800 | Medium | Pass |
 | Tudor GMT, 40-60 s | 28,800 | 28,800 | Medium | Pass |
-| Tudor GMT, 30-60 s | 28,800 | 28,800 | Low, ambiguous | Fail |
+| Tudor GMT, 30-60 s | 28,800 | 28,800 | Medium | Pass |
 | Tudor GMT, 0-60 s | 28,800 | 28,800 | Medium | Pass |
 
 The existing real-fixture benchmark mostly exercises manual BPH. It has only a
-few correlated windows and cannot prove the 90% Auto-BPH objective. The King
-Seiko result also shows why training and testing on only the Tudor capture would
-produce a misleading model.
+few correlated windows and cannot prove the 90% Auto-BPH objective. The large
+acoustic difference between King Seiko and Tudor still shows why training and
+testing on only the Tudor capture would produce a misleading model.
 
 ## High-band periodicity experiment
 
@@ -140,8 +140,9 @@ low-quality grid into a usable result.
 
 On the 20-second Tudor fixture, 28,800 bph produced a high-band correlation of
 0.632; every wrong supported BPH was below zero. The iPhone bottom-mic fixture
-showed the same separation. The King Seiko fixture's strongest correlation was
-only 0.019, so it remains low quality rather than receiving an invented rate.
+showed the same separation. At this stage, the King Seiko fixture's strongest
+one-beat correlation was only 0.019, so it remained low quality rather than
+receiving an invented rate.
 
 For the reconstructed Tudor capture, Auto recognition improved from one of
 three 20-second windows to three of three. The formerly ambiguous 30-second
@@ -152,6 +153,34 @@ establish an accuracy percentage.
 The frozen fixture manifest is `recognition-fixtures.json`. It records source
 capture groups so future training and test tooling can prevent overlapping
 segments from leaking across data splits.
+
+## Alternating tick/tock periodicity experiment
+
+The second non-ML experiment was implemented on 2026-07-18. Mechanical tick and
+tock transients can have different shapes, so a quiet movement may correlate
+weakly one beat later but more clearly when the same escapement side returns two
+beats later. The high-band detector now evaluates both the selected BPH period
+and twice that period.
+
+The King Seiko fixture has only 0.005 correlation at one beat, but 0.040 at two
+beats. The absolute value is intentionally too weak for an ordinary spectral
+boost. However, 28,800 bph wins independently in all four non-overlapping
+5-second windows, and every window has a positive winner margin. This guarded
+consensus resolves the former 25,200/28,800 tie and produces a medium-quality
+28,800 result.
+
+The consensus tie-breaker requires at least three windows, a winner in every
+window, minimum per-window and full-capture margins, and an already usable DSP
+grid. Its boost replaces rather than stacks with the existing single-period
+boost. White noise, random impulses, and stationary high-frequency noise do not
+reach consensus. A deliberately 4 Hz amplitude-modulated carrier does reach
+28,800 consensus, but its grid remains low quality and therefore stays rejected.
+
+An optimized command-line replay of the reconstructed 60-second Tudor capture
+completed in 0.48 seconds with approximately 94 MB peak resident memory on the
+development Mac. This guards against an obvious complexity regression but does
+not satisfy the physical-device performance gate; the oldest supported iPhone
+must still remain below 30 seconds in a release build.
 
 ## Dataset and labels
 
