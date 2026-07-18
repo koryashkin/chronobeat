@@ -93,6 +93,7 @@ struct ContentView: View {
             ResultView(result: result,
                        exportURL: viewModel.latestExportURL,
                        exportStatusText: viewModel.exportStatusText,
+                       isExporting: viewModel.isExporting,
                        onExport: {
                 viewModel.exportLastMeasurement()
             }, onRetry: {
@@ -153,6 +154,7 @@ struct ResultView: View {
     let result: WatchMeasurementResult
     let exportURL: URL?
     let exportStatusText: String?
+    let isExporting: Bool
     let onExport: () -> Void
     let onRetry: () -> Void
 
@@ -218,15 +220,18 @@ struct ResultView: View {
 
             Button("Measure again", action: onRetry)
                 .buttonStyle(.borderedProminent)
+                .disabled(isExporting)
                 .accessibilityIdentifier("measureAgainButton")
 
             VStack(spacing: 8) {
                 Button {
                     onExport()
                 } label: {
-                    Label("Export debug capture", systemImage: "square.and.arrow.up")
+                    Label(isExporting ? "Preparing debug export" : "Export debug capture",
+                          systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
+                .disabled(isExporting)
                 .accessibilityIdentifier("exportDebugCaptureButton")
 
                 if let exportStatusText {

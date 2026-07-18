@@ -426,7 +426,7 @@ final class WatchDSPTests: XCTestCase {
         }
     }
 
-    func testDebugCaptureExportWritesWAVAndDiagnosticsJSON() throws {
+    func testDebugCaptureExportWritesAudioDiagnosticsAndCandidateTrace() throws {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5, duration: 12)
         let capture = AudioCapture(samples: samples,
                                    sampleRate: sampleRate,
@@ -443,6 +443,7 @@ final class WatchDSPTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.audioURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.diagnosticsURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: export.candidateTraceURL.path))
 
         let exportedAudio = try AVAudioFile(forReading: export.audioURL)
         XCTAssertEqual(Int(exportedAudio.length), samples.count)
@@ -456,7 +457,73 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertNotNil(json?["recognitionConfidence"])
         XCTAssertNotNil(json?["spectralPeriodicityScore"])
 
+        let traceData = try Data(contentsOf: export.candidateTraceURL)
+        let trace = try JSONDecoder().decode(TickCandidateTrace.self, from: traceData)
+        XCTAssertEqual(trace.schemaVersion, 1)
+        XCTAssertEqual(trace.selectedBPH, selectedBPH)
+        XCTAssertEqual(trace.sampleRate, sampleRate)
+        XCTAssertEqual(trace.sampleCount, samples.count)
+        XCTAssertEqual(trace.snippetFrameCount, 2_048)
+        XCTAssertEqual(trace.snippetCenterOffset, 1_024)
+        XCTAssertFalse(trace.events.isEmpty)
+        XCTAssertGreaterThanOrEqual(trace.sourceCandidateCount, trace.mergedCandidateCount)
+        XCTAssertGreaterThanOrEqual(trace.mergedCandidateCount, trace.events.count)
+        XCTAssertLessThanOrEqual(trace.events.count, 4_000)
+        XCTAssertTrue(trace.events.contains { $0.provisionalLabel == .likelyTick })
+        XCTAssertTrue(trace.events.allSatisfy { samples.indices.contains($0.sampleIndex) })
+
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testLowQualityCandidateTraceLeavesAllLabelsUnknown() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
+        addImpulseNoise(to: &samples, count: 180, amplitude: 0.18, seed: 0xBAD)
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Random impulse noise")
+        let result = WatchDSP.analyzeAuto(capture: capture)
+
+        let trace = WatchDSP.makeCandidateTrace(capture: capture, result: result)
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertFalse(trace.events.isEmpty)
+        XCTAssertTrue(trace.events.allSatisfy { $0.provisionalLabel == .unknown })
+    }
+
+    func testCandidateTraceSelectionKeepsTicksAndBalancesBoundedNegatives() {
+        func events(count: Int, start: Int, label: TickCandidateProvisionalLabel) -> [TickCandidateEvent] {
+            (0..<count).map { offset in
+                let sampleIndex = start + offset * 10
+                return TickCandidateEvent(sampleIndex: sampleIndex,
+                                          timeSeconds: Double(sampleIndex) / sampleRate,
+                                          normalizedEnvelope: Double((offset % 37) + 1),
+                                          nearestAssignedDistanceSeconds: nil,
+                                          provisionalLabel: label)
+            }
+        }
+
+        let candidates = events(count: 500, start: 0, label: .likelyTick)
+            + events(count: 5_000, start: 100_000, label: .unknown)
+            + events(count: 5_000, start: 200_000, label: .likelyNoise)
+
+        let selected = WatchDSP.selectCandidateTraceEvents(candidates)
+        let selectedAgain = WatchDSP.selectCandidateTraceEvents(candidates)
+
+        XCTAssertEqual(selected.count, 3_500)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .likelyTick }.count, 500)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .unknown }.count, 1_000)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .likelyNoise }.count, 2_000)
+        XCTAssertEqual(selected.map(\.sampleIndex), selectedAgain.map(\.sampleIndex))
+        XCTAssertEqual(selected.map(\.sampleIndex), selected.map(\.sampleIndex).sorted())
+
+        let underLimitButImbalanced = events(count: 100, start: 0, label: .likelyTick)
+            + events(count: 100, start: 100_000, label: .unknown)
+            + events(count: 2_000, start: 200_000, label: .likelyNoise)
+        let balanced = WatchDSP.selectCandidateTraceEvents(underLimitButImbalanced)
+
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .likelyTick }.count, 100)
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .unknown }.count, 100)
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .likelyNoise }.count, 512)
     }
 
     func testAudioCaptureComputesLevelDiagnostics() {
@@ -885,6 +952,40 @@ final class MeasurementViewModelAudioTests: XCTestCase {
 
         XCTAssertTrue(message.contains("analysis took longer"))
         XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+    }
+
+    func testDebugExportRunsAsynchronouslyAndPublishesResult() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 3, duration: 12)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeDescription: "Synthetic microphone")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AsyncWatchExport-\(UUID().uuidString)", isDirectory: true)
+        let exportOperation: AudioCaptureExportOperation = { _, _ in
+            Thread.sleep(forTimeInterval: 0.10)
+            return AudioCaptureExport(directoryURL: directory,
+                                      audioURL: directory.appendingPathComponent("capture.wav"),
+                                      diagnosticsURL: directory.appendingPathComponent("diagnostics.json"),
+                                      candidateTraceURL: directory.appendingPathComponent("candidates.json"))
+        }
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01,
+                                             exportOperation: exportOperation)
+        viewModel.selectedBPH = .manual(.bph28800)
+        viewModel.startMeasurement()
+
+        try await waitUntil(timeout: 15) {
+            if case .result = viewModel.state { return true }
+            return false
+        }
+
+        viewModel.exportLastMeasurement()
+
+        XCTAssertTrue(viewModel.isExporting)
+        XCTAssertEqual(viewModel.exportStatusText, "Preparing debug export…")
+        try await waitUntil(timeout: 2) { !viewModel.isExporting }
+        XCTAssertEqual(viewModel.latestExportURL, directory)
+        XCTAssertEqual(viewModel.exportStatusText, "Debug capture exported.")
     }
 
     func testInjectedAudioUpdatesCaptureStatusWithoutRealMicrophone() async throws {

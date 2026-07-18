@@ -1,10 +1,11 @@
 import AVFoundation
 import Foundation
 
-struct AudioCaptureExport: Equatable {
+struct AudioCaptureExport: Equatable, Sendable {
     let directoryURL: URL
     let audioURL: URL
     let diagnosticsURL: URL
+    let candidateTraceURL: URL
 }
 
 enum AudioCaptureExporter {
@@ -21,6 +22,7 @@ enum AudioCaptureExporter {
 
         let audioURL = exportDirectory.appendingPathComponent("capture.wav")
         let diagnosticsURL = exportDirectory.appendingPathComponent("diagnostics.json")
+        let candidateTraceURL = exportDirectory.appendingPathComponent("candidates.json")
 
         try writeWAV(samples: capture.samples,
                      sampleRate: capture.sampleRate,
@@ -29,10 +31,13 @@ enum AudioCaptureExporter {
                              result: result,
                              audioFileName: audioURL.lastPathComponent,
                              to: diagnosticsURL)
+        let trace = WatchDSP.makeCandidateTrace(capture: capture, result: result)
+        try writeCandidateTrace(trace, to: candidateTraceURL)
 
         return AudioCaptureExport(directoryURL: exportDirectory,
                                   audioURL: audioURL,
-                                  diagnosticsURL: diagnosticsURL)
+                                  diagnosticsURL: diagnosticsURL,
+                                  candidateTraceURL: candidateTraceURL)
     }
 
     private static func defaultExportDirectory() throws -> URL {
@@ -126,6 +131,12 @@ enum AudioCaptureExporter {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         return formatter.string(from: date)
+    }
+
+    private static func writeCandidateTrace(_ trace: TickCandidateTrace, to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(trace).write(to: url, options: .atomic)
     }
 }
 

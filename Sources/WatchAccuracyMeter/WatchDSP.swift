@@ -161,6 +161,36 @@ struct WatchMeasurementResult: Sendable {
     }
 }
 
+enum TickCandidateProvisionalLabel: String, Codable, Sendable {
+    case likelyTick
+    case likelyNoise
+    case unknown
+}
+
+struct TickCandidateEvent: Codable, Sendable {
+    let sampleIndex: Int
+    let timeSeconds: Double
+    let normalizedEnvelope: Double
+    let nearestAssignedDistanceSeconds: Double?
+    let provisionalLabel: TickCandidateProvisionalLabel
+}
+
+struct TickCandidateTrace: Codable, Sendable {
+    let schemaVersion: Int
+    let selectedBPH: Int
+    let isAutoBPH: Bool
+    let resultQuality: String
+    let sampleRate: Double
+    let sampleCount: Int
+    let snippetFrameCount: Int
+    let snippetCenterOffset: Int
+    let labelingPolicy: String
+    let eventSelectionPolicy: String
+    let sourceCandidateCount: Int
+    let mergedCandidateCount: Int
+    let events: [TickCandidateEvent]
+}
+
 enum WatchDSP {
     private enum DSPConfiguration {
         static let autoMinimumScore = 0.58
@@ -186,6 +216,15 @@ enum WatchDSP {
         static let autoSpectralMinimumUsefulPeriodicity = 0.12
         static let autoSpectralFullStrengthPeriodicity = 0.50
         static let autoSpectralMaximumScoreBoost = 0.08
+    }
+
+    private enum CandidateTraceConfiguration {
+        static let maximumEventCount = 4_000
+        static let duplicateMergeSeconds = 0.005
+        static let minimumUnknownCount = 256
+        static let minimumNoiseCount = 512
+        static let unknownsPerTick = 2
+        static let noiseEventsPerTick = 4
     }
 
     private struct PreparedAnalysis {
@@ -336,6 +375,219 @@ enum WatchDSP {
                        selectedBPH: selectedBPH,
                        checksCompetingBeatRates: checksCompetingBeatRates,
                        isAutoBPH: isAutoBPH)
+    }
+
+    static func makeCandidateTrace(
+        capture: AudioCapture,
+        result: WatchMeasurementResult
+    ) -> TickCandidateTrace {
+        let emptyTrace = TickCandidateTrace(schemaVersion: 1,
+                                            selectedBPH: result.selectedBPH,
+                                            isAutoBPH: result.isAutoBPH,
+                                            resultQuality: result.quality.rawValue,
+                                            sampleRate: capture.sampleRate,
+                                            sampleCount: capture.samples.count,
+                                            snippetFrameCount: 2_048,
+                                            snippetCenterOffset: 1_024,
+                                            labelingPolicy: "dsp-grid-v1-provisional-review-required",
+                                            eventSelectionPolicy: "5ms-nms-all-ticks-balanced-hard-negatives-v1",
+                                            sourceCandidateCount: 0,
+                                            mergedCandidateCount: 0,
+                                            events: [])
+        guard capture.sampleRate > 0,
+              capture.samples.count > Int(capture.sampleRate * 10) else {
+            return emptyTrace
+        }
+
+        let prepared = prepareAnalysis(samples: capture.samples,
+                                       sampleRate: capture.sampleRate,
+                                       routeDescription: capture.routeDescription,
+                                       routeWarning: capture.routeWarning,
+                                       audioStats: capture.levels)
+        let expectedPeriod = 3_600.0 / Double(result.selectedBPH)
+        let selectedPeaks = detectPeaks(context: prepared.peakDetectionContext,
+                                        sampleRate: capture.sampleRate,
+                                        expectedPeriod: expectedPeriod,
+                                        thresholdScale: Float(result.chosenThresholdScale))
+        let selectedFit = robustFit(peaks: selectedPeaks.peaks,
+                                    selectedBPH: result.selectedBPH,
+                                    captureDuration: capture.duration)
+        let assignedTimes = selectedFit?.assignedPeakTimes ?? []
+        let rawCandidates = prepared.peakDetectionContext.candidatesByThreshold
+            .min { $0.thresholdScale < $1.thresholdScale }?
+            .peaks ?? []
+        let candidateIndices = Set(rawCandidates.map(\.refinedIndex)).sorted()
+        let tickTolerance = max(0.003, expectedPeriod * 0.03)
+        let noiseTolerance = max(0.010, expectedPeriod * 0.08)
+        let canProposeLabels = result.quality != .low && !assignedTimes.isEmpty
+
+        let sourceEvents = candidateIndices.map { sampleIndex in
+            let time = Double(sampleIndex) / capture.sampleRate
+            let distance = nearestDistance(to: time, in: assignedTimes)
+            let label: TickCandidateProvisionalLabel
+            if !canProposeLabels {
+                label = .unknown
+            } else if let distance, distance <= tickTolerance {
+                label = .likelyTick
+            } else if let distance, distance >= noiseTolerance {
+                label = .likelyNoise
+            } else {
+                label = .unknown
+            }
+            let envelope = prepared.peakDetectionContext.envelope.indices.contains(sampleIndex)
+                ? Double(prepared.peakDetectionContext.envelope[sampleIndex])
+                : 0
+            return TickCandidateEvent(sampleIndex: sampleIndex,
+                                      timeSeconds: time,
+                                      normalizedEnvelope: envelope,
+                                      nearestAssignedDistanceSeconds: distance,
+                                      provisionalLabel: label)
+        }
+        let mergedEvents = mergeCandidateTraceEvents(sourceEvents,
+                                                     sampleRate: capture.sampleRate,
+                                                     sampleCount: capture.samples.count)
+        let selectedEvents = selectCandidateTraceEvents(
+            mergedEvents,
+            maximumCount: CandidateTraceConfiguration.maximumEventCount
+        )
+
+        return TickCandidateTrace(schemaVersion: emptyTrace.schemaVersion,
+                                  selectedBPH: emptyTrace.selectedBPH,
+                                  isAutoBPH: emptyTrace.isAutoBPH,
+                                  resultQuality: emptyTrace.resultQuality,
+                                  sampleRate: emptyTrace.sampleRate,
+                                  sampleCount: emptyTrace.sampleCount,
+                                  snippetFrameCount: emptyTrace.snippetFrameCount,
+                                  snippetCenterOffset: emptyTrace.snippetCenterOffset,
+                                  labelingPolicy: emptyTrace.labelingPolicy,
+                                  eventSelectionPolicy: emptyTrace.eventSelectionPolicy,
+                                  sourceCandidateCount: sourceEvents.count,
+                                  mergedCandidateCount: mergedEvents.count,
+                                  events: selectedEvents)
+    }
+
+    private static func mergeCandidateTraceEvents(
+        _ events: [TickCandidateEvent],
+        sampleRate: Double,
+        sampleCount: Int
+    ) -> [TickCandidateEvent] {
+        guard events.count > 1, sampleRate > 0, sampleCount > 0 else {
+            return events.sorted { $0.sampleIndex < $1.sampleIndex }
+        }
+
+        let radius = max(1, Int((sampleRate * CandidateTraceConfiguration.duplicateMergeSeconds).rounded()))
+        let ranked = events.sorted { lhs, rhs in
+            let lhsPriority = candidateLabelPriority(lhs.provisionalLabel)
+            let rhsPriority = candidateLabelPriority(rhs.provisionalLabel)
+            if lhsPriority != rhsPriority { return lhsPriority > rhsPriority }
+            if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                return lhs.normalizedEnvelope > rhs.normalizedEnvelope
+            }
+            return lhs.sampleIndex < rhs.sampleIndex
+        }
+        var suppressed = Array(repeating: false, count: sampleCount)
+        var selected: [TickCandidateEvent] = []
+        selected.reserveCapacity(min(events.count, sampleCount / radius + 1))
+
+        for event in ranked where event.sampleIndex >= 0 && event.sampleIndex < sampleCount {
+            guard !suppressed[event.sampleIndex] else { continue }
+            selected.append(event)
+            let start = max(0, event.sampleIndex - radius)
+            let end = min(sampleCount - 1, event.sampleIndex + radius)
+            for index in start...end {
+                suppressed[index] = true
+            }
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    static func selectCandidateTraceEvents(
+        _ events: [TickCandidateEvent],
+        maximumCount: Int = 4_000
+    ) -> [TickCandidateEvent] {
+        guard maximumCount > 0 else { return [] }
+
+        let likelyTicks = events.filter { $0.provisionalLabel == .likelyTick }
+        let unknown = events.filter { $0.provisionalLabel == .unknown }
+        let likelyNoise = events.filter { $0.provisionalLabel == .likelyNoise }
+
+        if likelyTicks.isEmpty {
+            return diverseTraceSample(from: unknown + likelyNoise, limit: maximumCount)
+        }
+
+        var selected = diverseTraceSample(from: likelyTicks, limit: maximumCount)
+        let selectedTickCount = selected.count
+        var remaining = maximumCount - selected.count
+        guard remaining > 0 else { return selected }
+
+        let unknownTarget = max(CandidateTraceConfiguration.minimumUnknownCount,
+                                selected.count * CandidateTraceConfiguration.unknownsPerTick)
+        let selectedUnknown = diverseTraceSample(from: unknown,
+                                                 limit: min(remaining, unknownTarget))
+        selected.append(contentsOf: selectedUnknown)
+        remaining -= selectedUnknown.count
+
+        if remaining > 0 {
+            let noiseTarget = max(CandidateTraceConfiguration.minimumNoiseCount,
+                                  selectedTickCount * CandidateTraceConfiguration.noiseEventsPerTick)
+            selected.append(contentsOf: diverseTraceSample(from: likelyNoise,
+                                                            limit: min(remaining, noiseTarget)))
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    private static func diverseTraceSample(
+        from events: [TickCandidateEvent],
+        limit: Int
+    ) -> [TickCandidateEvent] {
+        guard limit > 0, events.count > limit else {
+            return limit > 0 ? events.sorted { $0.sampleIndex < $1.sampleIndex } : []
+        }
+
+        let ordered = events.sorted { $0.sampleIndex < $1.sampleIndex }
+        let coverageCount = max(1, limit / 2)
+        var selectedIndices = Set<Int>()
+        var selected: [TickCandidateEvent] = []
+        selected.reserveCapacity(limit)
+
+        for bucket in 0..<coverageCount {
+            let start = bucket * ordered.count / coverageCount
+            let end = max(start + 1, (bucket + 1) * ordered.count / coverageCount)
+            guard start < ordered.count else { continue }
+            let strongest = ordered[start..<min(end, ordered.count)].max { lhs, rhs in
+                if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                    return lhs.normalizedEnvelope < rhs.normalizedEnvelope
+                }
+                return lhs.sampleIndex > rhs.sampleIndex
+            }
+            if let strongest, selectedIndices.insert(strongest.sampleIndex).inserted {
+                selected.append(strongest)
+            }
+        }
+
+        if selected.count < limit {
+            let strongestRemaining = ordered
+                .filter { !selectedIndices.contains($0.sampleIndex) }
+                .sorted { lhs, rhs in
+                    if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                        return lhs.normalizedEnvelope > rhs.normalizedEnvelope
+                    }
+                    return lhs.sampleIndex < rhs.sampleIndex
+                }
+            selected.append(contentsOf: strongestRemaining.prefix(limit - selected.count))
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    private static func candidateLabelPriority(_ label: TickCandidateProvisionalLabel) -> Int {
+        switch label {
+        case .likelyTick: 2
+        case .unknown: 1
+        case .likelyNoise: 0
+        }
     }
 
     private static func prepareAnalysis(
@@ -1194,6 +1446,7 @@ enum WatchDSP {
         let windowRates: [Double]
         let analysisWindowCount: Int
         let successfulWindowCount: Int
+        let assignedPeakTimes: [Double]
     }
 
     private static func robustFit(peaks: [Double], selectedBPH: Int, captureDuration: Double) -> FitResult? {
@@ -1273,7 +1526,32 @@ enum WatchDSP {
                          outlierRatio: max(0, min(1, outlierRatio)),
                          windowRates: windowSummary.rates,
                          analysisWindowCount: windowSummary.analysisWindowCount,
-                         successfulWindowCount: windowSummary.successfulWindowCount)
+                         successfulWindowCount: windowSummary.successfulWindowCount,
+                         assignedPeakTimes: pairs.map(\.t).sorted())
+    }
+
+    private static func nearestDistance(to value: Double, in sortedValues: [Double]) -> Double? {
+        guard !sortedValues.isEmpty else { return nil }
+
+        var lower = 0
+        var upper = sortedValues.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if sortedValues[middle] < value {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        var distance = Double.infinity
+        if lower < sortedValues.count {
+            distance = min(distance, abs(sortedValues[lower] - value))
+        }
+        if lower > 0 {
+            distance = min(distance, abs(sortedValues[lower - 1] - value))
+        }
+        return distance.isFinite ? distance : nil
     }
 
     private struct GridAssignment {

@@ -190,6 +190,26 @@ must be manually reviewed. Otherwise the model will reproduce the current DSP's
 mistakes. Include hard negatives from rejected resonance peaks, desk movement,
 speech, taps, and rotor noise.
 
+### Candidate trace export
+
+Each in-app debug export now includes `candidates.json` beside `capture.wav` and
+`diagnostics.json`. The trace contains candidate sample indices, normalized
+envelope strength, distance to the fitted beat grid, and a provisional label.
+An offline dataset tool can reconstruct each 2,048-frame waveform snippet from
+`capture.wav` using `snippetCenterOffset`; snippets at file boundaries must be
+zero-padded rather than shifted.
+
+The trace collapses candidates within 5 ms and exports at most 4,000 events. It
+keeps all provisional ticks and samples temporally diverse ambiguous events and
+strong hard negatives. Source, merged, and exported counts are recorded so the
+sampling bias remains visible during evaluation. Trace generation runs as a
+utility-priority background task so it cannot block the result screen.
+
+These labels are weak supervision, not ground truth. Low-quality captures export
+only `unknown` labels. Before training, a reviewer must confirm or correct all
+`likelyTick` and `likelyNoise` labels, and training code must exclude `unknown`.
+The full capture remains the unit of train/validation/test splitting.
+
 ### Split policy
 
 Never randomly split snippets or overlapping windows from one recording across

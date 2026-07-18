@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 
 typealias WatchAnalysisOperation = @Sendable (AudioCapture, BeatRateSelection) -> WatchMeasurementResult
+typealias AudioCaptureExportOperation = @Sendable (AudioCapture, WatchMeasurementResult) throws -> AudioCaptureExport
 
 private let defaultWatchAnalysisOperation: WatchAnalysisOperation = { capture, selection in
     switch selection {
@@ -16,6 +17,11 @@ private enum WatchAnalysisOutcome: Sendable {
     case result(WatchMeasurementResult)
     case timedOut
     case cancelled
+}
+
+private enum AudioCaptureExportOutcome: Sendable {
+    case success(AudioCaptureExport)
+    case failure(String)
 }
 
 private final class WatchAnalysisCompletion: @unchecked Sendable {
@@ -75,6 +81,7 @@ final class MeasurementViewModel: ObservableObject {
     @Published var liveClippingRatio: Double = 0
     @Published var latestExportURL: URL?
     @Published var exportStatusText: String?
+    @Published var isExporting: Bool = false
 
     var isMeasuring: Bool {
         state.isMeasuring
@@ -91,24 +98,31 @@ final class MeasurementViewModel: ObservableObject {
 
     private let audioMeter: any WatchAudioMetering
     private let analysisOperation: WatchAnalysisOperation
+    private let exportOperation: AudioCaptureExportOperation
     private let analysisTimeout: TimeInterval
     let measurementDuration: TimeInterval
     private var timerTask: Task<Void, Never>?
     private var measurementTask: Task<Void, Never>?
+    private var exportTask: Task<Void, Never>?
     private var lastObservedSampleCount = 0
     private var lastSampleGrowthDate = Date.distantPast
     private var latestCapture: AudioCapture?
     private var latestResult: WatchMeasurementResult?
     private var measurementGeneration = 0
+    private var exportGeneration = 0
 
     init(audioMeter: any WatchAudioMetering = AudioWatchMeter(),
          measurementDuration: TimeInterval = 60,
          analysisTimeout: TimeInterval = 30,
-         analysisOperation: WatchAnalysisOperation? = nil) {
+         analysisOperation: WatchAnalysisOperation? = nil,
+         exportOperation: AudioCaptureExportOperation? = nil) {
         self.audioMeter = audioMeter
         self.measurementDuration = measurementDuration
         self.analysisTimeout = analysisTimeout
         self.analysisOperation = analysisOperation ?? defaultWatchAnalysisOperation
+        self.exportOperation = exportOperation ?? { capture, result in
+            try AudioCaptureExporter.export(capture: capture, result: result)
+        }
     }
 
     func startMeasurement() {
@@ -184,6 +198,7 @@ final class MeasurementViewModel: ObservableObject {
     }
 
     private func resetState() {
+        cancelExport()
         state = .idle
         elapsedSeconds = 0
         progress = 0
@@ -285,20 +300,54 @@ final class MeasurementViewModel: ObservableObject {
     }
 
     func exportLastMeasurement() {
+        guard !isExporting else { return }
         guard let latestCapture, let latestResult else {
             exportStatusText = "No measurement is available to export."
             latestExportURL = nil
             return
         }
 
-        do {
-            let export = try AudioCaptureExporter.export(capture: latestCapture, result: latestResult)
-            latestExportURL = export.directoryURL
-            exportStatusText = "Debug capture exported."
-        } catch {
-            latestExportURL = nil
-            exportStatusText = "Export failed: \(error.localizedDescription)"
+        exportGeneration += 1
+        let generation = exportGeneration
+        let operation = exportOperation
+        latestExportURL = nil
+        exportStatusText = "Preparing debug export…"
+        isExporting = true
+
+        exportTask = Task { [weak self] in
+            let outcome = await Task.detached(priority: .utility) {
+                do {
+                    return AudioCaptureExportOutcome.success(
+                        try operation(latestCapture, latestResult)
+                    )
+                } catch {
+                    return AudioCaptureExportOutcome.failure(error.localizedDescription)
+                }
+            }.value
+
+            guard let self,
+                  !Task.isCancelled,
+                  generation == self.exportGeneration else {
+                return
+            }
+            self.isExporting = false
+            self.exportTask = nil
+            switch outcome {
+            case .success(let export):
+                self.latestExportURL = export.directoryURL
+                self.exportStatusText = "Debug capture exported."
+            case .failure(let message):
+                self.latestExportURL = nil
+                self.exportStatusText = "Export failed: \(message)"
+            }
         }
+    }
+
+    private func cancelExport() {
+        exportGeneration += 1
+        exportTask?.cancel()
+        exportTask = nil
+        isExporting = false
     }
 
     private func startTimer() {
