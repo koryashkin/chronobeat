@@ -224,6 +224,11 @@ enum WatchDSP {
         static let autoAlternatingMinimumWindowMargin = 0.010
         static let autoAlternatingMinimumFullPeriodicity = 0.030
         static let autoAlternatingMinimumFullMargin = 0.025
+        static let autoIndependentMinimumScoreMargin = 0.020
+        static let autoIndependentMinimumCoverage = 0.80
+        static let autoIndependentMinimumRecall = 0.80
+        static let autoIndependentMinimumSinglePeriodicity = 0.20
+        static let autoIndependentMinimumSingleLead = 0.15
     }
 
     private enum CandidateTraceConfiguration {
@@ -331,9 +336,7 @@ enum WatchDSP {
 
         // Every supported beat rate was evaluated against the same prepared signal,
         // so the winner and margin already provide the competing-rate verification.
-        let second = sortedCandidates.dropFirst().first
-        let isAmbiguous = autoSelectionIsAmbiguous(best: bestCandidate,
-                                                   second: second)
+        let isAmbiguous = autoSelectionIsAmbiguous(candidates: sortedCandidates)
 
         if isAmbiguous {
             return replacing(result: best,
@@ -1942,10 +1945,9 @@ enum WatchDSP {
             || periodicityScore < DSPConfiguration.autoMinimumPeriodicity
     }
 
-    private static func autoSelectionIsAmbiguous(
-        best: AutoCandidate,
-        second: AutoCandidate?
-    ) -> Bool {
+    private static func autoSelectionIsAmbiguous(candidates: [AutoCandidate]) -> Bool {
+        guard let best = candidates.first else { return true }
+        let second = candidates.dropFirst().first
         let bestResult = best.result
         let bestScore = best.score
         let secondScore = second?.score ?? 0
@@ -1965,6 +1967,11 @@ enum WatchDSP {
             return true
         }
 
+        if independentSpectralEvidenceResolvesAmbiguity(best: best,
+                                                        candidates: candidates) {
+            return false
+        }
+
         let duration = bestResult.sampleRate > 0
             ? Double(bestResult.sampleCount) / bestResult.sampleRate
             : 0
@@ -1981,6 +1988,42 @@ enum WatchDSP {
             && secondResult.outlierRatio - bestResult.outlierRatio >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
 
         return !hasLongCaptureConsensus
+    }
+
+    private static func independentSpectralEvidenceResolvesAmbiguity(
+        best: AutoCandidate,
+        candidates: [AutoCandidate]
+    ) -> Bool {
+        guard let runnerUp = candidates.dropFirst().first else { return false }
+        let result = best.result
+        let otherResults = candidates.dropFirst().map(\.result)
+        let strongestOtherSingle = otherResults.map(\.spectralPeriodicityScore).max() ?? 0
+        let strongestOtherAlternating = otherResults.map(\.alternatingSpectralPeriodicityScore).max() ?? 0
+        let anyOtherAlternatingConsensus = otherResults.contains {
+            $0.alternatingSpectralConsensus >= 1
+        }
+        let singlePeriodEvidence = result.spectralPeriodicityScore
+            >= DSPConfiguration.autoIndependentMinimumSinglePeriodicity
+            && result.spectralPeriodicityScore - strongestOtherSingle
+            >= DSPConfiguration.autoIndependentMinimumSingleLead
+        let alternatingPeriodEvidence = result.alternatingSpectralConsensus >= 1
+            && !anyOtherAlternatingConsensus
+            && result.alternatingSpectralPeriodicityScore
+            >= DSPConfiguration.autoAlternatingMinimumFullPeriodicity
+            && result.alternatingSpectralPeriodicityScore - strongestOtherAlternating
+            >= DSPConfiguration.autoAlternatingMinimumFullMargin
+        let successfulWindowRatio = result.analysisWindowCount > 0
+            ? Double(result.successfulWindowCount) / Double(result.analysisWindowCount)
+            : 0
+
+        return best.score - runnerUp.score >= DSPConfiguration.autoIndependentMinimumScoreMargin
+            && result.quality != .low
+            && result.beatCoverage >= DSPConfiguration.autoIndependentMinimumCoverage
+            && result.tickRecallEstimate >= DSPConfiguration.autoIndependentMinimumRecall
+            && result.periodicityScore >= DSPConfiguration.autoMinimumPeriodicity
+            && result.outlierRatio <= DSPConfiguration.autoMaximumOutlierRatio
+            && successfulWindowRatio >= DSPConfiguration.minimumSuccessfulWindowRatio
+            && (singlePeriodEvidence || alternatingPeriodEvidence)
     }
 
     private static func recognitionConfidence(

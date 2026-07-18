@@ -14,6 +14,7 @@ Guidance for coding agents working on Watch Accuracy Meter.
 - `Sources/WatchAccuracyMeter/`: app source.
 - `Tests/WatchAccuracyMeterTests/`: unit tests and audio fixtures.
 - `Tests/WatchAccuracyMeterTests/Fixtures/`: sanitized committed WAV regression fixtures only.
+- `Tools/RecognitionBenchmark/`: private full-capture replay and JSON reporting.
 - `Docs/`: product and validation notes.
 - `project.yml`: XcodeGen source of truth.
 - `WatchAccuracyMeter.xcodeproj/`: generated project, tracked in git.
@@ -42,6 +43,16 @@ xcodebuild test \
 ```
 
 Simulator tests validate compilation, UI wiring, fixtures, and DSP regressions. Real microphone accuracy must be validated on a physical iPhone.
+
+Replay labeled private captures without committing them:
+
+```sh
+Tools/RecognitionBenchmark/run-recognition-benchmark /path/to/manifest.json > /tmp/recognition-report.json
+```
+
+Do not treat overlapping-window results as independent. The report's acceptance
+gate remains ineligible until it contains at least 100 windows from 20 unique
+captures, five watches, and two devices.
 
 ## Audio/DSP Rules
 

@@ -371,6 +371,41 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.recognitionConfidence, 0.50)
     }
 
+    func testIndependentSinglePeriodEvidenceResolvesTudorAmbiguity() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-20s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor independent spectral evidence")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.80)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.80)
+        XCTAssertGreaterThanOrEqual(result.spectralPeriodicityScore, 0.20)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 0)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
+    func testIndependentAlternatingEvidenceResolvesTudorRunnerUpGrid() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-30s")
+        let start = Int((10 * fixture.sampleRate).rounded())
+        let frameCount = Int((20 * fixture.sampleRate).rounded())
+        let samples = Array(fixture.samples[start..<(start + frameCount)])
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor alternating runner-up")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.80)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.80)
+        XCTAssertGreaterThanOrEqual(result.spectralPeriodicityScore, 0.20)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 1)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
     func testStationaryHighFrequencyNoiseDoesNotCreateAutoBeatRate() {
         var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
         addSine(to: &samples, frequency: 12_000, amplitude: 0.02)
@@ -773,24 +808,29 @@ final class WatchDSPTests: XCTestCase {
         let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "wav"))
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
-        let frameCount = AVAudioFrameCount(file.length)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
-        try file.read(into: buffer)
-
-        let channelData = try XCTUnwrap(buffer.floatChannelData)
         let channels = max(1, Int(format.channelCount))
-        let frames = Int(buffer.frameLength)
         var samples: [Float] = []
-        samples.reserveCapacity(frames)
+        samples.reserveCapacity(Int(file.length))
 
-        for frame in 0..<frames {
-            var mixed: Float = 0
-            for channel in 0..<channels {
-                mixed += channelData[channel][frame]
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            let requestedFrames = AVAudioFrameCount(min(remaining, 65_536))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format,
+                                                       frameCapacity: requestedFrames))
+            try file.read(into: buffer, frameCount: requestedFrames)
+            guard buffer.frameLength > 0 else { break }
+            let channelData = try XCTUnwrap(buffer.floatChannelData)
+
+            for frame in 0..<Int(buffer.frameLength) {
+                var mixed: Float = 0
+                for channel in 0..<channels {
+                    mixed += channelData[channel][frame]
+                }
+                samples.append(mixed / Float(channels))
             }
-            samples.append(mixed / Float(channels))
         }
 
+        XCTAssertEqual(samples.count, Int(file.length), "Fixture decoder returned a short read for \(name).")
         return (samples, format.sampleRate)
     }
 

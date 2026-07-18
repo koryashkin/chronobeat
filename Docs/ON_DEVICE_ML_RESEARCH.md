@@ -182,6 +182,26 @@ development Mac. This guards against an obvious complexity regression but does
 not satisfy the physical-device performance gate; the oldest supported iPhone
 must still remain below 30 seconds in a release build.
 
+## Independent spectral margin experiment
+
+The third non-ML experiment examined all four full 60-second device captures
+provided during development. Two 20-second windows selected 28,800 bph but were
+rejected because their final winner margins were 0.026-0.027, below the generic
+0.040 ambiguity threshold. Both had usable grids and an independent 8-20 kHz
+lead of more than 0.15 over every competing BPH.
+
+Auto BPH now permits a 0.020 margin only when the winning grid is already
+medium/high quality, beat coverage and tick recall are at least 0.80, window and
+outlier gates pass, and either one-beat spectral periodicity is at least 0.20
+with a 0.15 lead or guarded two-beat consensus is unique. The generic 0.040
+margin remains unchanged for all other results.
+
+`Tools/RecognitionBenchmark` reads private WAVs in chunks, evaluates every
+overlapping window, and emits JSON. On the four supplied captures it reports
+36/36 successful 20-second windows and four medium-quality full-capture results
+at 28,800 bph. Those windows come from only two watches at one BPH, so the report
+correctly keeps `acceptanceGateEligible` and `acceptanceGatePassed` false.
+
 ## Dataset and labels
 
 ### Pilot dataset
