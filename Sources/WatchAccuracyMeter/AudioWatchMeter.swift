@@ -107,7 +107,8 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
 
         engine.prepare()
         try engine.start()
-        registerRouteChangeObservers(session: session, engine: engine)
+        registerRouteChangeObservers(engine: engine,
+                                     expectedRoute: inputRouteIdentity(from: session))
     }
 
     func stop() {
@@ -181,21 +182,39 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         lock.unlock()
     }
 
-    private func registerRouteChangeObservers(session: AVAudioSession, engine: AVAudioEngine) {
+    private func registerRouteChangeObservers(
+        engine: AVAudioEngine,
+        expectedRoute: AudioInputRouteIdentity?
+    ) {
         unregisterRouteChangeObservers()
 
         let center = NotificationCenter.default
         let routeObserver = center.addObserver(forName: AVAudioSession.routeChangeNotification,
                                                object: nil,
                                                queue: nil) { [weak self] _ in
-            self?.markCaptureFailure(.routeChangedDuringCapture)
+            self?.validateCaptureRoute(expectedRoute: expectedRoute, event: .route)
         }
         let engineObserver = center.addObserver(forName: .AVAudioEngineConfigurationChange,
                                                 object: engine,
                                                 queue: nil) { [weak self] _ in
-            self?.markCaptureFailure(.routeChangedDuringCapture)
+            self?.validateCaptureRoute(expectedRoute: expectedRoute, event: .engineConfiguration)
         }
         notificationObservers = [routeObserver, engineObserver]
+    }
+
+    private func validateCaptureRoute(
+        expectedRoute: AudioInputRouteIdentity?,
+        event: AudioCaptureChangeEvent
+    ) {
+        let session = AVAudioSession.sharedInstance()
+        let currentRoute = inputRouteIdentity(from: session)
+        guard AudioCaptureRouteChangePolicy.shouldFailCapture(expectedRoute: expectedRoute,
+                                                              currentRoute: currentRoute,
+                                                              engineIsRunning: engine?.isRunning ?? false,
+                                                              event: event) else {
+            return
+        }
+        markCaptureFailure(.routeChangedDuringCapture)
     }
 
     private func unregisterRouteChangeObservers() {
@@ -236,6 +255,12 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
         return dataSources.first
     }
 
+    private func inputRouteIdentity(from session: AVAudioSession) -> AudioInputRouteIdentity? {
+        guard let input = session.currentRoute.inputs.first else { return nil }
+        return AudioInputRouteIdentity(portUID: input.uid,
+                                       portType: input.portType.rawValue)
+    }
+
     private func updateRouteInfo(from session: AVAudioSession) {
         let inputs = session.currentRoute.inputs
         guard let primaryInput = inputs.first else {
@@ -255,6 +280,38 @@ final class AudioWatchMeter: WatchAudioMetering, @unchecked Sendable {
             routeWarning = nil
         } else {
             routeWarning = "Current input is \(primaryInput.portName). Use the built-in iPhone microphone for best results."
+        }
+    }
+}
+
+struct AudioInputRouteIdentity: Equatable, Sendable {
+    let portUID: String
+    let portType: String
+}
+
+enum AudioCaptureChangeEvent: Sendable {
+    case route
+    case engineConfiguration
+}
+
+enum AudioCaptureRouteChangePolicy {
+    static func shouldFailCapture(
+        expectedRoute: AudioInputRouteIdentity?,
+        currentRoute: AudioInputRouteIdentity?,
+        engineIsRunning: Bool,
+        event: AudioCaptureChangeEvent
+    ) -> Bool {
+        guard let expectedRoute,
+              let currentRoute else {
+            return true
+        }
+        guard expectedRoute == currentRoute else { return true }
+
+        switch event {
+        case .route:
+            return false
+        case .engineConfiguration:
+            return !engineIsRunning
         }
     }
 }

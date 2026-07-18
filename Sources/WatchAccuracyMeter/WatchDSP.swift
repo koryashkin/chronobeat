@@ -1,6 +1,6 @@
 import Foundation
 
-enum BeatRate: Int, CaseIterable, Identifiable {
+enum BeatRate: Int, CaseIterable, Identifiable, Sendable {
     case bph18000 = 18_000
     case bph19800 = 19_800
     case bph21600 = 21_600
@@ -12,7 +12,7 @@ enum BeatRate: Int, CaseIterable, Identifiable {
     var label: String { "\(rawValue) bph" }
 }
 
-enum BeatRateSelection: Hashable, Identifiable, CaseIterable {
+enum BeatRateSelection: Hashable, Identifiable, CaseIterable, Sendable {
     case auto
     case manual(BeatRate)
 
@@ -69,7 +69,7 @@ extension MeasurementState {
     }
 }
 
-enum SignalQuality: String, Equatable {
+enum SignalQuality: String, Equatable, Sendable {
     case high
     case medium
     case low
@@ -83,7 +83,7 @@ enum SignalQuality: String, Equatable {
     }
 }
 
-struct WatchMeasurementResult {
+struct WatchMeasurementResult: Sendable {
     let selectedBPH: Int
     let isAutoBPH: Bool
     let detectedBPH: Double
@@ -177,6 +177,15 @@ enum WatchDSP {
         static let transientDerivativeWeight: Float = 0.55
     }
 
+    private struct PreparedAnalysis {
+        let sampleRate: Double
+        let sampleCount: Int
+        let routeDescription: String
+        let routeWarning: String?
+        let audioStats: AudioLevelStats
+        let peakDetectionContext: PeakDetectionContext
+    }
+
     static func analyzeAuto(capture: AudioCapture) -> WatchMeasurementResult {
         analyzeAuto(samples: capture.samples,
                     sampleRate: capture.sampleRate,
@@ -190,12 +199,32 @@ enum WatchDSP {
         routeDescription: String = "Unknown",
         routeWarning: String? = nil
     ) -> WatchMeasurementResult {
+        let audioStats = AudioLevelStats.measure(samples)
+        guard samples.count > Int(sampleRate * 10) else {
+            let selectedBPH = BeatRate.allCases.first?.rawValue ?? BeatRate.bph28800.rawValue
+            let expectedPeriod = 3600.0 / Double(selectedBPH)
+            return fallback(selectedBPH: selectedBPH,
+                            reasonScore: 0,
+                            detectionStats: .empty,
+                            audioStats: audioStats,
+                            expectedTickCount: expectedTickCount(sampleCount: samples.count,
+                                                                 sampleRate: sampleRate,
+                                                                 expectedPeriod: expectedPeriod),
+                            sampleRate: sampleRate,
+                            sampleCount: samples.count,
+                            routeDescription: routeDescription,
+                            routeWarning: routeWarning,
+                            isAutoBPH: true)
+        }
+
+        let prepared = prepareAnalysis(samples: samples,
+                                       sampleRate: sampleRate,
+                                       routeDescription: routeDescription,
+                                       routeWarning: routeWarning,
+                                       audioStats: audioStats)
         let candidates = BeatRate.allCases.map { beatRate in
-            analyze(samples: samples,
-                    sampleRate: sampleRate,
+            analyze(prepared: prepared,
                     selectedBPH: beatRate.rawValue,
-                    routeDescription: routeDescription,
-                    routeWarning: routeWarning,
                     checksCompetingBeatRates: false,
                     isAutoBPH: true)
         }
@@ -207,40 +236,35 @@ enum WatchDSP {
             return fallback(selectedBPH: BeatRate.bph28800.rawValue,
                             reasonScore: 0,
                             detectionStats: .empty,
-                            audioStats: AudioLevelStats.measure(samples),
+                            audioStats: prepared.audioStats,
                             expectedTickCount: 0,
-                            sampleRate: sampleRate,
-                            sampleCount: samples.count,
-                            routeDescription: routeDescription,
-                            routeWarning: routeWarning,
+                            sampleRate: prepared.sampleRate,
+                            sampleCount: prepared.sampleCount,
+                            routeDescription: prepared.routeDescription,
+                            routeWarning: prepared.routeWarning,
                             isAutoBPH: true)
         }
 
-        let verifiedBest = analyze(samples: samples,
-                                   sampleRate: sampleRate,
-                                   selectedBPH: best.selectedBPH,
-                                   routeDescription: routeDescription,
-                                   routeWarning: routeWarning,
-                                   checksCompetingBeatRates: true,
-                                   isAutoBPH: true)
-        let bestScore = max(autoBeatRateScore(best), autoBeatRateScore(verifiedBest))
+        // Every supported beat rate was evaluated against the same prepared signal,
+        // so the winner and margin already provide the competing-rate verification.
+        let bestScore = autoBeatRateScore(best)
         let secondScore = sortedCandidates.dropFirst().first.map(autoBeatRateScore) ?? 0
         let isAmbiguous = autoSelectionIsAmbiguous(bestScore: bestScore,
                                                    secondScore: secondScore,
-                                                   verifiedQuality: verifiedBest.quality,
-                                                   outlierRatio: verifiedBest.outlierRatio,
-                                                   periodicityScore: verifiedBest.periodicityScore)
+                                                   verifiedQuality: best.quality,
+                                                   outlierRatio: best.outlierRatio,
+                                                   periodicityScore: best.periodicityScore)
 
         if isAmbiguous {
-            return replacing(result: verifiedBest,
+            return replacing(result: best,
                              quality: .low,
-                             qualityScore: min(verifiedBest.qualityScore, 49),
-                             recognitionConfidence: min(verifiedBest.recognitionConfidence, 0.49),
-                             dominantFailureReason: autoAmbiguityFailureReason(for: verifiedBest),
+                             qualityScore: min(best.qualityScore, 49),
+                             recognitionConfidence: min(best.recognitionConfidence, 0.49),
+                             dominantFailureReason: autoAmbiguityFailureReason(for: best),
                              isAutoBPH: true)
         }
 
-        return replacing(result: verifiedBest, isAutoBPH: true)
+        return replacing(result: best, isAutoBPH: true)
     }
 
     static func analyze(
@@ -282,28 +306,66 @@ enum WatchDSP {
                             isAutoBPH: isAutoBPH)
         }
 
+        let prepared = prepareAnalysis(samples: samples,
+                                       sampleRate: sampleRate,
+                                       routeDescription: routeDescription,
+                                       routeWarning: routeWarning,
+                                       audioStats: audioStats)
+        return analyze(prepared: prepared,
+                       selectedBPH: selectedBPH,
+                       checksCompetingBeatRates: checksCompetingBeatRates,
+                       isAutoBPH: isAutoBPH)
+    }
+
+    private static func prepareAnalysis(
+        samples: [Float],
+        sampleRate: Double,
+        routeDescription: String,
+        routeWarning: String?,
+        audioStats: AudioLevelStats
+    ) -> PreparedAnalysis {
         let processed = preprocess(samples, sampleRate: sampleRate)
         let envelope = normalizeEnvelope(makeEnvelope(processed, sampleRate: sampleRate),
                                           sampleRate: sampleRate)
-        let selectedDetection = bestDetection(envelope: envelope,
-                                              sampleRate: sampleRate,
+        let peakDetectionContext = makePeakDetectionContext(envelope: envelope,
+                                                            sampleRate: sampleRate)
+        return PreparedAnalysis(sampleRate: sampleRate,
+                                sampleCount: samples.count,
+                                routeDescription: routeDescription,
+                                routeWarning: routeWarning,
+                                audioStats: audioStats,
+                                peakDetectionContext: peakDetectionContext)
+    }
+
+    private static func analyze(
+        prepared: PreparedAnalysis,
+        selectedBPH: Int,
+        checksCompetingBeatRates: Bool,
+        isAutoBPH: Bool
+    ) -> WatchMeasurementResult {
+        let expectedPeriod = 3600.0 / Double(selectedBPH)
+        let expectedTickCount = expectedTickCount(sampleCount: prepared.sampleCount,
+                                                  sampleRate: prepared.sampleRate,
+                                                  expectedPeriod: expectedPeriod)
+        let selectedDetection = bestDetection(context: prepared.peakDetectionContext,
+                                              sampleRate: prepared.sampleRate,
                                               selectedBPH: selectedBPH,
                                               expectedPeriod: expectedPeriod,
                                               expectedTickCount: expectedTickCount)
 
         guard let selectedDetection else {
-            let detection = fallbackDetection(envelope: envelope,
-                                              sampleRate: sampleRate,
+            let detection = fallbackDetection(context: prepared.peakDetectionContext,
+                                              sampleRate: prepared.sampleRate,
                                               expectedPeriod: expectedPeriod)
             return fallback(selectedBPH: selectedBPH,
                             reasonScore: 10,
                             detectionStats: detection.stats,
-                            audioStats: audioStats,
+                            audioStats: prepared.audioStats,
                             expectedTickCount: expectedTickCount,
-                            sampleRate: sampleRate,
-                            sampleCount: samples.count,
-                            routeDescription: routeDescription,
-                            routeWarning: routeWarning,
+                            sampleRate: prepared.sampleRate,
+                            sampleCount: prepared.sampleCount,
+                            routeDescription: prepared.routeDescription,
+                            routeWarning: prepared.routeWarning,
                             isAutoBPH: isAutoBPH)
         }
 
@@ -353,8 +415,8 @@ enum WatchDSP {
             quality = .low
         }
         let competition = checksCompetingBeatRates
-            ? beatRateCompetition(envelope: envelope,
-                                  sampleRate: sampleRate,
+            ? beatRateCompetition(context: prepared.peakDetectionContext,
+                                  sampleRate: prepared.sampleRate,
                                   selectedBPH: selectedBPH,
                                   expectedTickCount: expectedTickCount,
                                   selectedDetection: selectedDetection,
@@ -374,11 +436,11 @@ enum WatchDSP {
                                                           tickRecallEstimate: tickRecallEstimate,
                                                           periodicityScore: selectedDetection.periodicityScore)
         let dominantIssue = dominantFailureReason(quality: finalQuality,
-                                                  audioStats: audioStats,
+                                                  audioStats: prepared.audioStats,
                                                   detectionStats: detection.stats,
                                                   fit: fit,
                                                   expectedTickCount: expectedTickCount,
-                                                  routeWarning: routeWarning,
+                                                  routeWarning: prepared.routeWarning,
                                                   forcedIssue: competition.isLikelyWrongBeatRate ? .wrongBPHLikely : nil)
 
         return WatchMeasurementResult(selectedBPH: selectedBPH,
@@ -393,9 +455,9 @@ enum WatchDSP {
                                       beatCoverage: fit.beatCoverage,
                                       outlierRatio: fit.outlierRatio,
                                       chosenThresholdScale: detection.stats.thresholdScale,
-                                      rmsLevel: audioStats.rmsLevel,
-                                      peakLevel: audioStats.peakLevel,
-                                      clippingRatio: audioStats.clippingRatio,
+                                      rmsLevel: prepared.audioStats.rmsLevel,
+                                      peakLevel: prepared.audioStats.peakLevel,
+                                      clippingRatio: prepared.audioStats.clippingRatio,
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
                                       recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
@@ -406,10 +468,10 @@ enum WatchDSP {
                                       detectionThreshold: detection.stats.threshold,
                                       envelopeMedian: detection.stats.envelopeMedian,
                                       envelopeP95: detection.stats.envelopeP95,
-                                      sampleRate: sampleRate,
-                                      sampleCount: samples.count,
-                                      routeDescription: routeDescription,
-                                      routeWarning: routeWarning)
+                                      sampleRate: prepared.sampleRate,
+                                      sampleCount: prepared.sampleCount,
+                                      routeDescription: prepared.routeDescription,
+                                      routeWarning: prepared.routeWarning)
     }
 
     private static func fallback(
@@ -542,6 +604,102 @@ enum WatchDSP {
         return normalized
     }
 
+    private struct PeakDetectionContext {
+        let envelope: [Float]
+        let median: Float
+        let p95: Float
+        let candidatesByThreshold: [ThresholdPeakCandidates]
+    }
+
+    private struct ThresholdPeakCandidates {
+        let thresholdScale: Float
+        let threshold: Float
+        let peaks: [PeakCandidate]
+    }
+
+    private struct PeakCandidate {
+        let triggerIndex: Int
+        let refinedIndex: Int
+    }
+
+    private static func makePeakDetectionContext(
+        envelope: [Float],
+        sampleRate: Double
+    ) -> PeakDetectionContext {
+        let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
+        let median = percentile(sortedSample, 0.50)
+        let p90 = percentile(sortedSample, 0.90)
+        let p95 = percentile(sortedSample, 0.95)
+        let p99 = percentile(sortedSample, 0.99)
+        let baseThreshold = adaptiveThreshold(median: median,
+                                              p90: p90,
+                                              p95: p95,
+                                              p99: p99)
+        let localNoiseFloor = movingAverage(envelope,
+                                            window: max(16, Int(sampleRate * 0.10)))
+        let candidates = extractPeakCandidates(envelope: envelope,
+                                               localNoiseFloor: localNoiseFloor,
+                                               sampleRate: sampleRate,
+                                               baseThreshold: baseThreshold)
+        return PeakDetectionContext(envelope: envelope,
+                                    median: median,
+                                    p95: p95,
+                                    candidatesByThreshold: candidates)
+    }
+
+    private static func extractPeakCandidates(
+        envelope: [Float],
+        localNoiseFloor: [Float],
+        sampleRate: Double,
+        baseThreshold: Float
+    ) -> [ThresholdPeakCandidates] {
+        guard envelope.count > 3 else {
+            return thresholdScales.map {
+                ThresholdPeakCandidates(thresholdScale: $0,
+                                        threshold: baseThreshold * $0,
+                                        peaks: [])
+            }
+        }
+
+        let thresholds = thresholdScales.map { baseThreshold * $0 }
+        var candidatesByThreshold = Array(repeating: [PeakCandidate](), count: thresholds.count)
+        let radius = max(2, Int(sampleRate * 0.002))
+
+        for index in 1..<(envelope.count - 1) {
+            let value = envelope[index]
+            guard value >= envelope[index - 1], value > envelope[index + 1] else { continue }
+
+            let localThreshold = localNoiseFloor[index] * 1.18
+            guard thresholds.indices.contains(where: {
+                value > max(thresholds[$0], localThreshold)
+            }) else {
+                continue
+            }
+
+            let start = max(1, index - radius)
+            let end = min(envelope.count - 2, index + radius)
+            var bestIndex = index
+            var bestValue = value
+            for neighbor in start...end where envelope[neighbor] > bestValue {
+                bestValue = envelope[neighbor]
+                bestIndex = neighbor
+            }
+
+            for thresholdIndex in thresholds.indices
+            where value > max(thresholds[thresholdIndex], localThreshold) {
+                candidatesByThreshold[thresholdIndex].append(
+                    PeakCandidate(triggerIndex: index, refinedIndex: bestIndex)
+                )
+            }
+        }
+
+        return thresholds.indices.map { index in
+            ThresholdPeakCandidates(thresholdScale: thresholdScales[index],
+                                    threshold: thresholds[index],
+                                    peaks: candidatesByThreshold[index])
+        }
+    }
+
     private struct PeakDetectionResult {
         let peaks: [Double]
         let stats: PeakDetectionStats
@@ -573,7 +731,7 @@ enum WatchDSP {
     private static let thresholdScales: [Float] = [1.0, 0.85, 0.70, 0.55, 0.40]
 
     private static func bestDetection(
-        envelope: [Float],
+        context: PeakDetectionContext,
         sampleRate: Double,
         selectedBPH: Int,
         expectedPeriod: Double,
@@ -582,13 +740,13 @@ enum WatchDSP {
         var best: SelectedDetection?
 
         for scale in thresholdScales {
-            let detection = detectPeaks(envelope: envelope,
+            let detection = detectPeaks(context: context,
                                         sampleRate: sampleRate,
                                         expectedPeriod: expectedPeriod,
                                         thresholdScale: scale)
             guard let fit = robustFit(peaks: detection.peaks,
                                       selectedBPH: selectedBPH,
-                                      captureDuration: Double(envelope.count) / sampleRate) else {
+                                      captureDuration: Double(context.envelope.count) / sampleRate) else {
                 continue
             }
 
@@ -612,14 +770,18 @@ enum WatchDSP {
         return best
     }
 
-    private static func fallbackDetection(envelope: [Float], sampleRate: Double, expectedPeriod: Double) -> PeakDetectionResult {
-        var best = detectPeaks(envelope: envelope,
+    private static func fallbackDetection(
+        context: PeakDetectionContext,
+        sampleRate: Double,
+        expectedPeriod: Double
+    ) -> PeakDetectionResult {
+        var best = detectPeaks(context: context,
                                sampleRate: sampleRate,
                                expectedPeriod: expectedPeriod,
                                thresholdScale: thresholdScales[0])
 
         for scale in thresholdScales.dropFirst() {
-            let detection = detectPeaks(envelope: envelope,
+            let detection = detectPeaks(context: context,
                                         sampleRate: sampleRate,
                                         expectedPeriod: expectedPeriod,
                                         thresholdScale: scale)
@@ -632,61 +794,39 @@ enum WatchDSP {
     }
 
     private static func detectPeaks(
-        envelope: [Float],
+        context: PeakDetectionContext,
         sampleRate: Double,
         expectedPeriod: Double,
         thresholdScale: Float
     ) -> PeakDetectionResult {
+        let envelope = context.envelope
         guard envelope.count > 3 else {
             return PeakDetectionResult(peaks: [], stats: .empty)
         }
 
-        let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
-        let median = percentile(sortedSample, 0.50)
-        let p90 = percentile(sortedSample, 0.90)
-        let p95 = percentile(sortedSample, 0.95)
-        let p99 = percentile(sortedSample, 0.99)
-        let threshold = adaptiveThreshold(median: median, p90: p90, p95: p95, p99: p99) * thresholdScale
-        let localNoiseFloor = movingAverage(envelope, window: max(16, Int(sampleRate * 0.10)))
+        guard let candidates = context.candidatesByThreshold.first(where: {
+            $0.thresholdScale == thresholdScale
+        }) else {
+            return PeakDetectionResult(peaks: [], stats: .empty)
+        }
 
         let minDistance = Int(sampleRate * expectedPeriod * 0.45)
         var peaks: [Double] = []
         var lastPeakIndex = -minDistance
 
-        var i = 1
-        while i < envelope.count - 1 {
-            let value = envelope[i]
-            let localThreshold = max(threshold, localNoiseFloor[i] * 1.18)
-            if value > localThreshold,
-               value >= envelope[i - 1],
-               value > envelope[i + 1],
-               i - lastPeakIndex >= minDistance {
-
-                // Local refinement: choose max in a small neighborhood.
-                let radius = max(2, Int(sampleRate * 0.002))
-                let start = max(1, i - radius)
-                let end = min(envelope.count - 2, i + radius)
-                var bestIndex = i
-                var bestValue = value
-                for j in start...end where envelope[j] > bestValue {
-                    bestValue = envelope[j]
-                    bestIndex = j
-                }
-
-                peaks.append(Double(bestIndex) / sampleRate)
-                lastPeakIndex = bestIndex
-                i = bestIndex + minDistance
-            } else {
-                i += 1
-            }
+        for candidate in candidates.peaks
+        where candidate.triggerIndex - lastPeakIndex >= minDistance {
+            peaks.append(Double(candidate.refinedIndex) / sampleRate)
+            lastPeakIndex = candidate.refinedIndex
         }
 
         let stats = PeakDetectionStats(candidatePeakCount: peaks.count,
-                                       threshold: Double(threshold),
+                                       threshold: Double(candidates.threshold),
                                        thresholdScale: Double(thresholdScale),
-                                       envelopeMedian: Double(median),
-                                       envelopeP95: Double(p95),
-                                       estimatedSnrDb: estimatedSnrDb(signal: p95, noise: median))
+                                       envelopeMedian: Double(context.median),
+                                       envelopeP95: Double(context.p95),
+                                       estimatedSnrDb: estimatedSnrDb(signal: context.p95,
+                                                                      noise: context.median))
         return PeakDetectionResult(peaks: peaks, stats: stats)
     }
 
@@ -783,7 +923,7 @@ enum WatchDSP {
     }
 
     private static func beatRateCompetition(
-        envelope: [Float],
+        context: PeakDetectionContext,
         sampleRate: Double,
         selectedBPH: Int,
         expectedTickCount: Int,
@@ -809,10 +949,10 @@ enum WatchDSP {
 
         for beatRate in BeatRate.allCases where beatRate.rawValue != selectedBPH {
             let candidatePeriod = 3600.0 / Double(beatRate.rawValue)
-            let candidateExpectedCount = Self.expectedTickCount(sampleCount: envelope.count,
+            let candidateExpectedCount = Self.expectedTickCount(sampleCount: context.envelope.count,
                                                                 sampleRate: sampleRate,
                                                                 expectedPeriod: candidatePeriod)
-            guard let detection = bestDetection(envelope: envelope,
+            guard let detection = bestDetection(context: context,
                                                 sampleRate: sampleRate,
                                                 selectedBPH: beatRate.rawValue,
                                                 expectedPeriod: candidatePeriod,
