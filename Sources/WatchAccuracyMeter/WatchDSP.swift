@@ -193,6 +193,69 @@ struct TickCandidateTrace: Codable, Sendable {
     let events: [TickCandidateEvent]
 }
 
+struct TickCandidateWeight: Equatable, Sendable {
+    let sampleIndex: Int
+    let score: Double
+}
+
+// Research-only input for offline hybrid replay. Production analysis supplies no weights.
+struct TickCandidateWeighting: Sendable {
+    let weights: [TickCandidateWeight]
+
+    init(weights: [TickCandidateWeight]) {
+        let valid = weights.filter { $0.sampleIndex >= 0 && $0.score.isFinite }
+        let strongestByIndex = Dictionary(grouping: valid, by: \.sampleIndex).compactMap { sampleIndex, values in
+            values.map(\.score).max().map {
+                TickCandidateWeight(sampleIndex: sampleIndex,
+                                    score: max(0, min(1, $0)))
+            }
+        }
+        self.weights = strongestByIndex.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    func score(near sampleIndex: Int, toleranceSamples: Int) -> Double? {
+        guard toleranceSamples >= 0, !weights.isEmpty else { return nil }
+
+        var lower = 0
+        var upper = weights.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if weights[middle].sampleIndex < sampleIndex {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        var nearest: TickCandidateWeight?
+        if lower < weights.count {
+            nearest = weights[lower]
+        }
+        if lower > 0 {
+            let previous = weights[lower - 1]
+            if let currentNearest = nearest {
+                if abs(previous.sampleIndex - sampleIndex)
+                    <= abs(currentNearest.sampleIndex - sampleIndex) {
+                    nearest = previous
+                }
+            } else {
+                nearest = previous
+            }
+        }
+        guard let nearest,
+              abs(nearest.sampleIndex - sampleIndex) <= toleranceSamples else {
+            return nil
+        }
+        return nearest.score
+    }
+}
+
+struct TickCandidatePool: Sendable {
+    let sourceCandidateCount: Int
+    let mergedCandidateCount: Int
+    let events: [TickCandidateEvent]
+}
+
 enum WatchDSP {
     private enum DSPConfiguration {
         static let autoMinimumScore = 0.58
@@ -264,14 +327,27 @@ enum WatchDSP {
         analyzeAuto(samples: capture.samples,
                     sampleRate: capture.sampleRate,
                     routeDescription: capture.routeDescription,
-                    routeWarning: capture.routeWarning)
+                    routeWarning: capture.routeWarning,
+                    candidateWeighting: nil)
+    }
+
+    static func analyzeAuto(
+        capture: AudioCapture,
+        candidateWeighting: TickCandidateWeighting
+    ) -> WatchMeasurementResult {
+        analyzeAuto(samples: capture.samples,
+                    sampleRate: capture.sampleRate,
+                    routeDescription: capture.routeDescription,
+                    routeWarning: capture.routeWarning,
+                    candidateWeighting: candidateWeighting)
     }
 
     static func analyzeAuto(
         samples: [Float],
         sampleRate: Double,
         routeDescription: String = "Unknown",
-        routeWarning: String? = nil
+        routeWarning: String? = nil,
+        candidateWeighting: TickCandidateWeighting? = nil
     ) -> WatchMeasurementResult {
         let audioStats = AudioLevelStats.measure(samples)
         guard samples.count > Int(sampleRate * 10) else {
@@ -295,7 +371,8 @@ enum WatchDSP {
                                        sampleRate: sampleRate,
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
-                                       audioStats: audioStats)
+                                       audioStats: audioStats,
+                                       candidateWeighting: candidateWeighting)
         let spectralEvidence = autoSpectralEvidence(samples: samples,
                                                     sampleRate: sampleRate)
         return analyzeAuto(prepared: prepared,
@@ -401,7 +478,8 @@ enum WatchDSP {
                                        sampleRate: sampleRate,
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
-                                       audioStats: audioStats)
+                                       audioStats: audioStats,
+                                       candidateWeighting: nil)
         let preliminary = analyze(prepared: prepared,
                                   selectedBPH: selectedBPH,
                                   checksCompetingBeatRates: false,
@@ -520,6 +598,41 @@ enum WatchDSP {
                                   sourceCandidateCount: sourceEvents.count,
                                   mergedCandidateCount: mergedEvents.count,
                                   events: selectedEvents)
+    }
+
+    static func makeCandidatePool(capture: AudioCapture) -> TickCandidatePool {
+        guard capture.sampleRate > 0,
+              capture.samples.count > Int(capture.sampleRate * 10) else {
+            return TickCandidatePool(sourceCandidateCount: 0,
+                                     mergedCandidateCount: 0,
+                                     events: [])
+        }
+
+        let prepared = prepareAnalysis(samples: capture.samples,
+                                       sampleRate: capture.sampleRate,
+                                       routeDescription: capture.routeDescription,
+                                       routeWarning: capture.routeWarning,
+                                       audioStats: capture.levels)
+        let rawCandidates = prepared.peakDetectionContext.candidatesByThreshold
+            .min { $0.thresholdScale < $1.thresholdScale }?
+            .peaks ?? []
+        let candidateIndices = Set(rawCandidates.map(\.refinedIndex)).sorted()
+        let sourceEvents = candidateIndices.map { sampleIndex in
+            TickCandidateEvent(
+                sampleIndex: sampleIndex,
+                timeSeconds: Double(sampleIndex) / capture.sampleRate,
+                normalizedEnvelope: prepared.peakDetectionContext.envelope.indices.contains(sampleIndex)
+                    ? Double(prepared.peakDetectionContext.envelope[sampleIndex]) : 0,
+                nearestAssignedDistanceSeconds: nil,
+                provisionalLabel: .unknown
+            )
+        }
+        let mergedEvents = mergeCandidateTraceEvents(sourceEvents,
+                                                     sampleRate: capture.sampleRate,
+                                                     sampleCount: capture.samples.count)
+        return TickCandidatePool(sourceCandidateCount: sourceEvents.count,
+                                 mergedCandidateCount: mergedEvents.count,
+                                 events: mergedEvents)
     }
 
     private static func mergeCandidateTraceEvents(
@@ -651,13 +764,15 @@ enum WatchDSP {
         sampleRate: Double,
         routeDescription: String,
         routeWarning: String?,
-        audioStats: AudioLevelStats
+        audioStats: AudioLevelStats,
+        candidateWeighting: TickCandidateWeighting? = nil
     ) -> PreparedAnalysis {
         let processed = preprocess(samples, sampleRate: sampleRate)
         let envelope = normalizeEnvelope(makeEnvelope(processed, sampleRate: sampleRate),
                                           sampleRate: sampleRate)
         let peakDetectionContext = makePeakDetectionContext(envelope: envelope,
-                                                            sampleRate: sampleRate)
+                                                            sampleRate: sampleRate,
+                                                            candidateWeighting: candidateWeighting)
         return PreparedAnalysis(sampleRate: sampleRate,
                                 sampleCount: samples.count,
                                 routeDescription: routeDescription,
@@ -1172,6 +1287,7 @@ enum WatchDSP {
         let median: Float
         let p95: Float
         let candidatesByThreshold: [ThresholdPeakCandidates]
+        let candidateWeighting: TickCandidateWeighting?
     }
 
     private struct ThresholdPeakCandidates {
@@ -1187,7 +1303,8 @@ enum WatchDSP {
 
     private static func makePeakDetectionContext(
         envelope: [Float],
-        sampleRate: Double
+        sampleRate: Double,
+        candidateWeighting: TickCandidateWeighting?
     ) -> PeakDetectionContext {
         let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
         let median = percentile(sortedSample, 0.50)
@@ -1207,7 +1324,8 @@ enum WatchDSP {
         return PeakDetectionContext(envelope: envelope,
                                     median: median,
                                     p95: p95,
-                                    candidatesByThreshold: candidates)
+                                    candidatesByThreshold: candidates,
+                                    candidateWeighting: candidateWeighting)
     }
 
     private static func extractPeakCandidates(
@@ -1374,13 +1492,18 @@ enum WatchDSP {
         }
 
         let minDistance = Int(sampleRate * expectedPeriod * 0.45)
-        var peaks: [Double] = []
-        var lastPeakIndex = -minDistance
-
-        for candidate in candidates.peaks
-        where candidate.triggerIndex - lastPeakIndex >= minDistance {
-            peaks.append(Double(candidate.refinedIndex) / sampleRate)
-            lastPeakIndex = candidate.refinedIndex
+        let peaks: [Double]
+        if let candidateWeighting = context.candidateWeighting,
+           !candidateWeighting.weights.isEmpty {
+            peaks = weightedPeakTimes(candidates: candidates.peaks,
+                                      envelope: envelope,
+                                      sampleRate: sampleRate,
+                                      minDistance: minDistance,
+                                      candidateWeighting: candidateWeighting)
+        } else {
+            peaks = chronologicalPeakTimes(candidates: candidates.peaks,
+                                           sampleRate: sampleRate,
+                                           minDistance: minDistance)
         }
 
         let stats = PeakDetectionStats(candidatePeakCount: peaks.count,
@@ -1391,6 +1514,77 @@ enum WatchDSP {
                                        estimatedSnrDb: estimatedSnrDb(signal: context.p95,
                                                                       noise: context.median))
         return PeakDetectionResult(peaks: peaks, stats: stats)
+    }
+
+    private static func chronologicalPeakTimes(
+        candidates: [PeakCandidate],
+        sampleRate: Double,
+        minDistance: Int
+    ) -> [Double] {
+        var peaks: [Double] = []
+        var lastPeakIndex = -minDistance
+        for candidate in candidates
+        where candidate.triggerIndex - lastPeakIndex >= minDistance {
+            peaks.append(Double(candidate.refinedIndex) / sampleRate)
+            lastPeakIndex = candidate.refinedIndex
+        }
+        return peaks
+    }
+
+    private static func weightedPeakTimes(
+        candidates: [PeakCandidate],
+        envelope: [Float],
+        sampleRate: Double,
+        minDistance: Int,
+        candidateWeighting: TickCandidateWeighting
+    ) -> [Double] {
+        let lookupTolerance = max(1, Int((sampleRate * CandidateTraceConfiguration.duplicateMergeSeconds).rounded()))
+        let scored = candidates.map { candidate in
+            let score = candidateWeighting.score(near: candidate.refinedIndex,
+                                                  toleranceSamples: lookupTolerance) ?? 0
+            return (candidate: candidate, score: score)
+        }
+        let scoreRange = scored.reduce(into: (minimum: Double.infinity, maximum: -Double.infinity)) {
+            $0.minimum = min($0.minimum, $1.score)
+            $0.maximum = max($0.maximum, $1.score)
+        }
+        guard scoreRange.minimum.isFinite,
+              scoreRange.maximum.isFinite,
+              scoreRange.maximum - scoreRange.minimum > 0.000_001 else {
+            return chronologicalPeakTimes(candidates: candidates,
+                                          sampleRate: sampleRate,
+                                          minDistance: minDistance)
+        }
+
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            let lhsEnvelope = envelope.indices.contains(lhs.candidate.refinedIndex)
+                ? envelope[lhs.candidate.refinedIndex] : 0
+            let rhsEnvelope = envelope.indices.contains(rhs.candidate.refinedIndex)
+                ? envelope[rhs.candidate.refinedIndex] : 0
+            if lhsEnvelope != rhsEnvelope { return lhsEnvelope > rhsEnvelope }
+            return lhs.candidate.triggerIndex < rhs.candidate.triggerIndex
+        }
+        var suppressed = Array(repeating: false, count: envelope.count)
+        var selected: [PeakCandidate] = []
+        selected.reserveCapacity(candidates.count)
+
+        for item in ranked {
+            let index = item.candidate.triggerIndex
+            guard suppressed.indices.contains(index), !suppressed[index] else { continue }
+            selected.append(item.candidate)
+            let start = max(0, index - minDistance + 1)
+            let end = min(suppressed.count - 1, index + minDistance - 1)
+            if start <= end {
+                for suppressedIndex in start...end {
+                    suppressed[suppressedIndex] = true
+                }
+            }
+        }
+
+        return selected.sorted { $0.refinedIndex < $1.refinedIndex }.map {
+            Double($0.refinedIndex) / sampleRate
+        }
     }
 
     private static func percentile(_ sortedValues: [Float], _ fraction: Double) -> Float {

@@ -66,9 +66,10 @@ Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
   > /tmp/tick-candidate-report.json
 ```
 
-The ML experiment uses whole-watch holdouts and provisional DSP labels. Its
-output is research evidence only; never add a generated model to the app unless
-manually reviewed labels and the end-to-end acceptance gates pass.
+The ML experiment uses whole-watch holdouts and reports both candidate metrics
+and full-capture DSP-only versus hybrid outcomes. Its opt-in candidate weighting
+must remain inactive in production; never add a generated model to the app
+unless manually reviewed labels and the end-to-end acceptance gates pass.
 
 Generate a private manual-review package for a capture with known BPH:
 

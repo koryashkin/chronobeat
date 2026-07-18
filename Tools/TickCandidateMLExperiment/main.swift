@@ -43,6 +43,13 @@ private struct CandidateExample {
     let features: TickCandidateFeatureVector
 }
 
+private struct CaptureDataset {
+    let spec: CaptureSpec
+    let watchID: String
+    let capture: AudioCapture
+    let candidatePool: TickCandidatePool
+}
+
 private enum ModelKind: String {
     case logistic
     case boostedTree = "boosted-tree"
@@ -136,6 +143,33 @@ private struct CaptureReport: Encodable {
     let ignoredLabelCount: Int
 }
 
+private struct EndToEndOutcome: Encodable {
+    let selectedBPH: Int
+    let detectedBPH: Double
+    let rateSecondsPerDay: Double
+    let quality: String
+    let succeeds: Bool
+    let qualityScore: Double
+    let recognitionConfidence: Double
+    let validPeakCount: Int
+    let beatCoverage: Double
+    let periodicityScore: Double
+}
+
+private struct EndToEndComparison: Encodable {
+    let captureID: String
+    let knownBPH: Int
+    let candidatePoolCount: Int
+    let predictedTickCandidateCount: Int
+    let dspOnly: EndToEndOutcome
+    let hybrid: EndToEndOutcome
+    let classification: String
+    let qualityScoreDelta: Double
+    let beatCoverageDelta: Double
+    let periodicityDelta: Double
+    let validPeakCountDelta: Int
+}
+
 private struct FoldReport: Encodable {
     let heldOutWatchID: String
     let trainingCaptureIDs: [String]
@@ -145,6 +179,11 @@ private struct FoldReport: Encodable {
     let baselineEnvelopeThreshold: Double
     let modelMetrics: ClassificationMetrics
     let envelopeBaselineMetrics: ClassificationMetrics
+    let endToEndComparisons: [EndToEndComparison]
+    let dspOnlySuccessCount: Int
+    let hybridSuccessCount: Int
+    let recoveryCount: Int
+    let regressionCount: Int
 }
 
 private struct ExperimentReport: Encodable {
@@ -166,6 +205,14 @@ private struct ExperimentReport: Encodable {
     let aggregateEnvelopeBaselineMetrics: ClassificationMetrics
     let modelImprovesF1OverEnvelopeBaseline: Bool
     let candidateMetricGatePassed: Bool
+    let dspOnlyEndToEndSuccessCount: Int
+    let hybridEndToEndSuccessCount: Int
+    let endToEndRecoveryCount: Int
+    let endToEndRegressionCount: Int
+    let hybridHasNoOutcomeRegression: Bool
+    let meanQualityScoreDelta: Double
+    let meanBeatCoverageDelta: Double
+    let meanPeriodicityDelta: Double
     let productionEligible: Bool
     let modelOutputPath: String?
     let caveats: [String]
@@ -390,6 +437,82 @@ private func predictions(
     }
 }
 
+private func inferenceExamples(for dataset: CaptureDataset) -> [CandidateExample] {
+    dataset.candidatePool.events.map { event in
+        CandidateExample(
+            captureID: dataset.spec.id,
+            watchID: dataset.watchID,
+            sampleIndex: event.sampleIndex,
+            isTick: false,
+            envelope: event.normalizedEnvelope,
+            features: TickCandidateFeatureSchema.extract(
+                samples: dataset.capture.samples,
+                sampleRate: dataset.capture.sampleRate,
+                centerIndex: event.sampleIndex,
+                normalizedEnvelope: event.normalizedEnvelope
+            )
+        )
+    }
+}
+
+private func endToEndOutcome(
+    _ result: WatchMeasurementResult,
+    knownBPH: Int
+) -> EndToEndOutcome {
+    EndToEndOutcome(
+        selectedBPH: result.selectedBPH,
+        detectedBPH: result.detectedBPH,
+        rateSecondsPerDay: result.rateSecondsPerDay,
+        quality: result.quality.rawValue,
+        succeeds: result.selectedBPH == knownBPH && result.quality != .low,
+        qualityScore: result.qualityScore,
+        recognitionConfidence: result.recognitionConfidence,
+        validPeakCount: result.validPeakCount,
+        beatCoverage: result.beatCoverage,
+        periodicityScore: result.periodicityScore
+    )
+}
+
+private func endToEndComparison(
+    dataset: CaptureDataset,
+    classifier: TrainedClassifier
+) throws -> EndToEndComparison {
+    let examples = inferenceExamples(for: dataset)
+    let modelPredictions = try predictions(from: classifier, examples: examples)
+    let weights = zip(dataset.candidatePool.events, modelPredictions).map { event, predictsTick in
+        TickCandidateWeight(sampleIndex: event.sampleIndex,
+                            score: predictsTick ? 1 : 0)
+    }
+    let dspResult = WatchDSP.analyzeAuto(capture: dataset.capture)
+    let hybridResult = WatchDSP.analyzeAuto(
+        capture: dataset.capture,
+        candidateWeighting: TickCandidateWeighting(weights: weights)
+    )
+    let dspOutcome = endToEndOutcome(dspResult, knownBPH: dataset.spec.knownBPH)
+    let hybridOutcome = endToEndOutcome(hybridResult, knownBPH: dataset.spec.knownBPH)
+    let classification: String
+    switch (dspOutcome.succeeds, hybridOutcome.succeeds) {
+    case (false, true): classification = "recovery"
+    case (true, false): classification = "regression"
+    case (true, true): classification = "both-succeed"
+    case (false, false): classification = "both-fail"
+    }
+
+    return EndToEndComparison(
+        captureID: dataset.spec.id,
+        knownBPH: dataset.spec.knownBPH,
+        candidatePoolCount: dataset.candidatePool.events.count,
+        predictedTickCandidateCount: modelPredictions.filter { $0 }.count,
+        dspOnly: dspOutcome,
+        hybrid: hybridOutcome,
+        classification: classification,
+        qualityScoreDelta: hybridOutcome.qualityScore - dspOutcome.qualityScore,
+        beatCoverageDelta: hybridOutcome.beatCoverage - dspOutcome.beatCoverage,
+        periodicityDelta: hybridOutcome.periodicityScore - dspOutcome.periodicityScore,
+        validPeakCountDelta: hybridOutcome.validPeakCount - dspOutcome.validPeakCount
+    )
+}
+
 private func diverseSample(_ examples: [CandidateExample], limit: Int) -> [CandidateExample] {
     guard limit > 0, examples.count > limit else { return Array(examples.prefix(max(0, limit))) }
     let ordered = examples.sorted {
@@ -505,6 +628,7 @@ private func run() throws {
     var capturePaths = Set<String>()
     var examples: [CandidateExample] = []
     var captureReports: [CaptureReport] = []
+    var captureDatasets: [String: CaptureDataset] = [:]
     var reviewedCandidateCount = 0
     var provisionalCandidateCount = 0
     for spec in manifest.captures {
@@ -533,6 +657,11 @@ private func run() throws {
                                    routeDescription: spec.id)
         let result = WatchDSP.analyzeAuto(capture: capture)
         let trace = WatchDSP.makeCandidateTrace(capture: capture, result: result)
+        let candidatePool = WatchDSP.makeCandidatePool(capture: capture)
+        captureDatasets[spec.id] = CaptureDataset(spec: spec,
+                                                  watchID: watchID,
+                                                  capture: capture,
+                                                  candidatePool: candidatePool)
         let reviewedLabels = try loadReviewedLabels(for: spec,
                                                     manifestURL: arguments.manifestURL)
 
@@ -670,6 +799,16 @@ private func run() throws {
 
         let trainingIDs = Set(training.map(\.captureID)).sorted()
         let testingIDs = Set(testing.map(\.captureID)).sorted()
+        let heldOutDatasets = captureDatasets.values
+            .filter { $0.watchID == heldOutWatchID }
+            .sorted { $0.spec.id < $1.spec.id }
+        let comparisons = try heldOutDatasets.map {
+            try endToEndComparison(dataset: $0, classifier: classifier)
+        }
+        let dspOnlySuccessCount = comparisons.filter { $0.dspOnly.succeeds }.count
+        let hybridSuccessCount = comparisons.filter { $0.hybrid.succeeds }.count
+        let recoveryCount = comparisons.filter { $0.classification == "recovery" }.count
+        let regressionCount = comparisons.filter { $0.classification == "regression" }.count
         folds.append(FoldReport(heldOutWatchID: heldOutWatchID,
                                 trainingCaptureIDs: trainingIDs,
                                 testingCaptureIDs: testingIDs,
@@ -677,7 +816,12 @@ private func run() throws {
                                 testingExampleCount: testing.count,
                                 baselineEnvelopeThreshold: threshold,
                                 modelMetrics: modelMetrics,
-                                envelopeBaselineMetrics: baselineMetrics))
+                                envelopeBaselineMetrics: baselineMetrics,
+                                endToEndComparisons: comparisons,
+                                dspOnlySuccessCount: dspOnlySuccessCount,
+                                hybridSuccessCount: hybridSuccessCount,
+                                recoveryCount: recoveryCount,
+                                regressionCount: regressionCount))
     }
 
     let usesOnlyReviewedLabels = reviewedCandidateCount > 0
@@ -709,8 +853,21 @@ private func run() throws {
 
     let aggregateModel = ClassificationMetrics.aggregate(modelFoldMetrics)
     let aggregateBaseline = ClassificationMetrics.aggregate(baselineFoldMetrics)
+    let dspOnlyEndToEndSuccessCount = folds.reduce(0) { $0 + $1.dspOnlySuccessCount }
+    let hybridEndToEndSuccessCount = folds.reduce(0) { $0 + $1.hybridSuccessCount }
+    let endToEndRecoveryCount = folds.reduce(0) { $0 + $1.recoveryCount }
+    let endToEndRegressionCount = folds.reduce(0) { $0 + $1.regressionCount }
+    let hybridHasNoOutcomeRegression = endToEndRegressionCount == 0
+    let endToEndComparisons = folds.flatMap(\.endToEndComparisons)
+    let comparisonCount = max(1, endToEndComparisons.count)
+    let meanQualityScoreDelta = endToEndComparisons.reduce(0) { $0 + $1.qualityScoreDelta }
+        / Double(comparisonCount)
+    let meanBeatCoverageDelta = endToEndComparisons.reduce(0) { $0 + $1.beatCoverageDelta }
+        / Double(comparisonCount)
+    let meanPeriodicityDelta = endToEndComparisons.reduce(0) { $0 + $1.periodicityDelta }
+        / Double(comparisonCount)
     var caveats = [
-        "Candidate metrics do not prove that weighted candidates improve Auto-BPH or sec/day accuracy.",
+        "End-to-end replay uses hard Create ML class predictions only to prioritize colliding candidates; deterministic Auto-BPH and confidence gates remain authoritative.",
         "The generated model must remain outside the app until it beats DSP-only end-to-end on a frozen held-out benchmark.",
         "The manifest contains \(watchIDs.count) watches, \(Set(manifest.captures.map(\.knownBPH)).count) BPH values, and \(Set(manifest.captures.compactMap(\.deviceID)).count) devices."
     ]
@@ -721,10 +878,13 @@ private func run() throws {
     if reviewedCandidateCount > 0 {
         caveats.append("Manual labels reflect reviewer judgment and still require capture-level held-out validation.")
     }
+    if endToEndRegressionCount > 0 {
+        caveats.append("The hybrid path regressed \(endToEndRegressionCount) held-out captures and must not ship.")
+    }
     let report = ExperimentReport(
-        schemaVersion: 2,
+        schemaVersion: 3,
         featureSchemaVersion: TickCandidateFeatureSchema.version,
-        analysisMode: "leaveOneWatchOutCandidateFeasibility",
+        analysisMode: "leaveOneWatchOutCandidateAndEndToEndFeasibility",
         labelSource: labelSource,
         modelType: arguments.modelKind.reportName,
         captureCount: captureReports.count,
@@ -741,6 +901,14 @@ private func run() throws {
         modelImprovesF1OverEnvelopeBaseline: aggregateModel.f1 > aggregateBaseline.f1,
         candidateMetricGatePassed: aggregateModel.precision >= 0.98
             && aggregateModel.recall >= 0.90,
+        dspOnlyEndToEndSuccessCount: dspOnlyEndToEndSuccessCount,
+        hybridEndToEndSuccessCount: hybridEndToEndSuccessCount,
+        endToEndRecoveryCount: endToEndRecoveryCount,
+        endToEndRegressionCount: endToEndRegressionCount,
+        hybridHasNoOutcomeRegression: hybridHasNoOutcomeRegression,
+        meanQualityScoreDelta: meanQualityScoreDelta,
+        meanBeatCoverageDelta: meanBeatCoverageDelta,
+        meanPeriodicityDelta: meanPeriodicityDelta,
         productionEligible: false,
         modelOutputPath: arguments.modelOutputURL?.path,
         caveats: caveats,

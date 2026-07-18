@@ -164,6 +164,95 @@ final class WatchDSPTests: XCTestCase {
         }
     }
 
+    func testCandidateWeightingClampsDeduplicatesAndFindsNearestScore() {
+        let weighting = TickCandidateWeighting(weights: [
+            TickCandidateWeight(sampleIndex: 120, score: -0.4),
+            TickCandidateWeight(sampleIndex: 120, score: 0.8),
+            TickCandidateWeight(sampleIndex: 300, score: 1.4),
+            TickCandidateWeight(sampleIndex: -1, score: 0.5),
+            TickCandidateWeight(sampleIndex: 500, score: .nan)
+        ])
+
+        XCTAssertEqual(weighting.weights, [
+            TickCandidateWeight(sampleIndex: 120, score: 0.8),
+            TickCandidateWeight(sampleIndex: 300, score: 1)
+        ])
+        XCTAssertEqual(weighting.score(near: 124, toleranceSamples: 4), 0.8)
+        XCTAssertEqual(weighting.score(near: 290, toleranceSamples: 10), 1)
+        XCTAssertNil(weighting.score(near: 290, toleranceSamples: 9))
+    }
+
+    func testEqualCandidateWeightsPreserveProductionAutoResult() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4, duration: 12)
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Equal-weight synthetic")
+        let pool = WatchDSP.makeCandidatePool(capture: capture)
+        let weighting = TickCandidateWeighting(weights: pool.events.map {
+            TickCandidateWeight(sampleIndex: $0.sampleIndex, score: 0.5)
+        })
+
+        let production = WatchDSP.analyzeAuto(capture: capture)
+        let experimental = WatchDSP.analyzeAuto(capture: capture,
+                                                candidateWeighting: weighting)
+
+        XCTAssertFalse(pool.events.isEmpty)
+        XCTAssertEqual(experimental.selectedBPH, production.selectedBPH)
+        XCTAssertEqual(experimental.quality, production.quality)
+        XCTAssertEqual(experimental.detectedPeakCount, production.detectedPeakCount)
+        XCTAssertEqual(experimental.validPeakCount, production.validPeakCount)
+        XCTAssertEqual(experimental.rateSecondsPerDay, production.rateSecondsPerDay, accuracy: 0.000_001)
+    }
+
+    func testCandidateWeightingPrefersPeriodicTicksOverNearbyJitteredDecoys() {
+        let duration = 20.0
+        var samples = Array(repeating: Float.zero, count: Int(duration * sampleRate))
+        let period = 3_600.0 / Double(selectedBPH)
+        let jitterPattern = [0.010, 0.050, 0.018, 0.045, 0.025, 0.040]
+        var trueTickIndices: [Int] = []
+        var beatIndex = 0
+        var tickTime = 0.1
+        while tickTime < duration - 0.1 {
+            let tickIndex = Int((tickTime * sampleRate).rounded())
+            let jitter = jitterPattern[beatIndex % jitterPattern.count]
+            let decoyIndex = tickIndex - Int((jitter * sampleRate).rounded())
+            addSyntheticTick(to: &samples,
+                             at: decoyIndex,
+                             beatIndex: beatIndex,
+                             amplitudeScale: 1)
+            addSyntheticTick(to: &samples,
+                             at: tickIndex,
+                             beatIndex: beatIndex,
+                             amplitudeScale: 0.65)
+            trueTickIndices.append(tickIndex)
+            beatIndex += 1
+            tickTime += period
+        }
+
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Weighted collision synthetic")
+        let pool = WatchDSP.makeCandidatePool(capture: capture)
+        let trueTolerance = Int((sampleRate * 0.004).rounded())
+        let weighting = TickCandidateWeighting(weights: pool.events.map { event in
+            let isTrueTick = trueTickIndices.contains {
+                abs($0 - event.sampleIndex) <= trueTolerance
+            }
+            return TickCandidateWeight(sampleIndex: event.sampleIndex,
+                                       score: isTrueTick ? 1 : 0)
+        })
+
+        let production = WatchDSP.analyzeAuto(capture: capture)
+        let experimental = WatchDSP.analyzeAuto(capture: capture,
+                                                candidateWeighting: weighting)
+
+        XCTAssertEqual(experimental.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(experimental.quality, .low)
+        XCTAssertGreaterThan(experimental.periodicityScore, production.periodicityScore + 0.02)
+        XCTAssertGreaterThan(experimental.qualityScore, production.qualityScore + 5)
+        XCTAssertLessThan(abs(experimental.rateSecondsPerDay), abs(production.rateSecondsPerDay))
+    }
+
     func testAutoBPHPreservesTooQuietFailureReason() {
         let samples = Array(repeating: Float(0), count: Int(sampleRate * 12))
 

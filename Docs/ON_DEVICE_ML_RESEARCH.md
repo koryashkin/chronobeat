@@ -238,6 +238,31 @@ their known BPH. This prevents poisoned labels, but it means the experiment
 cannot measure whether ML recovers failed captures. That requires manual event
 labels from both successful and failed recordings.
 
+### Held-out hybrid replay
+
+Candidate-level metrics are not enough to decide whether a model improves the
+app. The experiment now also performs full Auto-BPH replay for each held-out
+watch. The model's hard class output can only prioritize one candidate over a
+nearby collision inside the detector refractory window. It does not delete an
+isolated candidate, select BPH, loosen a confidence gate, or calculate rate.
+The ordinary app path supplies no weights and retains its original chronological
+candidate suppression behavior.
+
+On the same four full 60-second captures:
+
+| Held-out model | DSP-only success | Hybrid success | Recoveries | Regressions | Mean quality-score delta | Mean coverage delta | Mean periodicity delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Logistic regression | 4/4 | 4/4 | 0 | 0 | +7.01 | -0.0073 | +0.0851 |
+| Boosted tree | 4/4 | 4/4 | 0 | 0 | +7.41 | -0.0152 | +0.0936 |
+
+The model often chooses a cleaner periodic transient on King Seiko, but it also
+reduces fitted tick coverage on both Tudor captures. More importantly, it
+recovers no failed capture because the current benchmark already passes in DSP.
+These results do not justify an app model: candidate precision/recall still miss
+their gate, the data covers only two watches at one BPH on one device, and there
+is no trusted timegrapher reference for sec/day. The hybrid hook remains an
+offline evaluation mechanism only.
+
 ### Manual candidate review
 
 `Tools/CandidateReview` closes that data gap without sending audio anywhere. It

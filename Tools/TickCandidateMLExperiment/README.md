@@ -2,9 +2,11 @@
 
 This macOS-only research tool evaluates compact Create ML classifiers over
 candidate transients. It regenerates provisional candidate labels from raw WAVs,
-extracts fixed-rate features, holds out complete watches, and emits JSON.
+extracts fixed-rate features, holds out complete watches, replays full Auto-BPH
+with model-assisted candidate collision handling, and emits JSON.
 
-It does not alter the iOS app or prove product accuracy. Provisional DSP labels
+It does not change production app behavior or prove product accuracy. The
+weighting hook is opt-in and used only by this evaluator. Provisional DSP labels
 must be manually reviewed before training a production candidate verifier.
 
 ## Manifest
@@ -61,9 +63,12 @@ Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
 model artifacts are ignored by git and must stay out of the app until the
 manually labeled, end-to-end acceptance gates pass.
 
-The report includes per-watch folds, aggregate confusion matrices, comparison
-with a train-only envelope threshold, reviewed/provisional counts, and explicit
-caveats. `candidateMetricGatePassed` is diagnostic only, and
+The schema-version 3 report includes per-watch folds, aggregate confusion
+matrices, comparison with a train-only envelope threshold, reviewed/provisional
+counts, and full-capture DSP-only versus hybrid outcomes. It reports recoveries,
+regressions, and mean quality-score, coverage, and periodicity deltas. The model
+only prioritizes colliding candidates; deterministic grid fitting and ambiguity
+gates remain authoritative. `candidateMetricGatePassed` is diagnostic only, and
 `productionEligible` remains false until candidate and end-to-end gates pass.
 
 Compile an exported model to verify the Apple runtime artifact:
