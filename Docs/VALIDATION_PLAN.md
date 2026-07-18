@@ -33,6 +33,15 @@ For each watch:
 
 The app is promising if high-confidence measurements repeat within approximately ±3–5 sec/day.
 
+Recognition and timing accuracy are separate gates. Auto-BPH recognition must be
+measured on a frozen manifest of held-out real captures before sec/day accuracy is
+claimed. Overlapping windows from one capture must not be split between training
+and test sets.
+
+For an experimental Core ML candidate verifier, use the dataset, split policy, and
+acceptance gates in `ON_DEVICE_ML_RESEARCH.md`. Always compare DSP-only and hybrid
+results on the same captures.
+
 ## Fail criteria
 
 The app is not ready if:

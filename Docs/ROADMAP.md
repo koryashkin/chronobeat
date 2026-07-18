@@ -25,7 +25,17 @@
 - better retry guidance
 - optional estimated beat error when confidence is high
 
-## v0.4 — experimental motion-assisted recognition
+## v0.4 - experimental on-device recognition
+
+- add a versioned real-capture benchmark manifest
+- evaluate a multi-band DSP candidate detector
+- collect and label tick/noise candidate snippets
+- train a small custom Core ML candidate verifier
+- compare DSP-only and hybrid recognition on frozen held-out captures
+- keep deterministic beat-grid fitting and strict ambiguity rejection
+- do not ship ML unless it meets the gates in `ON_DEVICE_ML_RESEARCH.md`
+
+## v0.5 — experimental motion-assisted recognition
 
 - capture raw Core Motion accelerometer samples alongside microphone audio
 - support an optional physical-contact mode with the watch caseback touching the iPhone
