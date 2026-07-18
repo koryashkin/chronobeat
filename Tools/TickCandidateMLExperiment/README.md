@@ -20,7 +20,8 @@ Use the same private manifest format as `Tools/RecognitionBenchmark`:
       "path": "/absolute/path/to/capture.wav",
       "knownBPH": 28800,
       "watchID": "stable-watch-identifier",
-      "deviceID": "iphone-model-or-test-device"
+      "deviceID": "iphone-model-or-test-device",
+      "reviewLabelsPath": "/optional/path/to/reviewed-labels.json"
     }
   ]
 }
@@ -29,6 +30,11 @@ Use the same private manifest format as `Tools/RecognitionBenchmark`:
 Every capture needs `watchID` and `deviceID`. Duplicate capture IDs and paths
 are rejected. At least two watches are required so no snippets from the held-out
 watch can leak into training.
+
+When `reviewLabelsPath` is present, only reviewed `tick` and `noise` events are
+used. `unsure` and unreviewed events are ignored. Reviewed events remain usable
+when DSP is low or selects a different BPH. Without that path, the tool uses
+provisional grid labels and requires DSP to recognize the known BPH.
 
 ## Run
 
@@ -56,10 +62,9 @@ model artifacts are ignored by git and must stay out of the app until the
 manually labeled, end-to-end acceptance gates pass.
 
 The report includes per-watch folds, aggregate confusion matrices, comparison
-with a train-only envelope threshold, data counts, and explicit caveats. Its
-`weakLabelMetricGatePassed` field is diagnostic only, and `productionEligible`
-is always false because the labels are weak. A capture must already recognize
-its known BPH with non-low quality before it can supply provisional labels.
+with a train-only envelope threshold, reviewed/provisional counts, and explicit
+caveats. `candidateMetricGatePassed` is diagnostic only, and
+`productionEligible` remains false until candidate and end-to-end gates pass.
 
 Compile an exported model to verify the Apple runtime artifact:
 

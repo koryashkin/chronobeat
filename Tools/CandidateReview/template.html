@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Chronobeat Candidate Review</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f6f7;
+      color: #17191c;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: #f5f6f7; }
+    button, select { font: inherit; letter-spacing: 0; }
+    button { cursor: pointer; }
+    button:focus-visible, select:focus-visible {
+      outline: 3px solid #1769aa;
+      outline-offset: 2px;
+    }
+    .app { min-height: 100vh; display: grid; grid-template-rows: auto auto 1fr; }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 18px 24px;
+      border-bottom: 1px solid #d9dde1;
+      background: #ffffff;
+    }
+    h1 { margin: 0; font-size: 22px; line-height: 1.2; letter-spacing: 0; }
+    .capture-meta { display: flex; gap: 18px; color: #5c636b; font-size: 13px; }
+    .capture-meta strong { color: #17191c; font-weight: 650; }
+    .toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 24px;
+      border-bottom: 1px solid #d9dde1;
+      background: #eef1f3;
+    }
+    .toolbar-group { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .button, select {
+      min-height: 36px;
+      padding: 7px 11px;
+      border: 1px solid #bdc4ca;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #22262a;
+    }
+    .button:hover { background: #f7f8f9; }
+    .button.primary { border-color: #1769aa; background: #1769aa; color: #ffffff; }
+    .button.danger { color: #a22626; }
+    .icon-button { width: 38px; padding: 0; font-size: 20px; line-height: 1; }
+    .workspace { min-height: 0; display: grid; grid-template-columns: 300px minmax(0, 1fr); }
+    aside {
+      min-height: 0;
+      overflow: auto;
+      border-right: 1px solid #d9dde1;
+      background: #ffffff;
+    }
+    .candidate-list { margin: 0; padding: 0; list-style: none; }
+    .candidate-row {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 12px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      min-height: 48px;
+      padding: 8px 14px;
+      border: 0;
+      border-bottom: 1px solid #eceff1;
+      border-radius: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+    }
+    .candidate-row:hover { background: #f3f6f8; }
+    .candidate-row.selected { background: #e6f0f8; box-shadow: inset 3px 0 #1769aa; }
+    .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #a6adb4; }
+    .status-dot.tick { background: #23824b; }
+    .status-dot.noise { background: #c23a3a; }
+    .status-dot.unsure { background: #b87912; }
+    .candidate-time { font-variant-numeric: tabular-nums; font-weight: 620; }
+    .candidate-provisional { color: #69717a; font-size: 12px; }
+    main { min-width: 0; overflow: auto; background: #f8f9fa; }
+    .review-panel { max-width: 980px; margin: 0 auto; padding: 28px 32px 48px; }
+    .event-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 20px;
+    }
+    h2 { margin: 0 0 5px; font-size: 26px; letter-spacing: 0; }
+    .event-detail { color: #606870; font-size: 14px; font-variant-numeric: tabular-nums; }
+    .progress-text { color: #4d555d; font-size: 14px; text-align: right; }
+    .waveform-shell {
+      width: 100%;
+      aspect-ratio: 5 / 1;
+      min-height: 150px;
+      max-height: 230px;
+      border: 1px solid #cbd1d6;
+      border-radius: 6px;
+      background: #101418;
+      overflow: hidden;
+    }
+    canvas { display: block; width: 100%; height: 100%; }
+    .transport {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 16px 0 22px;
+    }
+    .play-button { min-width: 150px; }
+    .audio-status { min-height: 20px; color: #626a72; font-size: 13px; }
+    .label-control {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      max-width: 680px;
+      margin: 0 auto;
+    }
+    .label-button {
+      min-height: 52px;
+      border: 2px solid #c7cdd2;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #22262a;
+      font-weight: 680;
+    }
+    .label-button.tick:hover, .label-button.tick.selected { border-color: #23824b; background: #e7f5ec; color: #155c34; }
+    .label-button.noise:hover, .label-button.noise.selected { border-color: #c23a3a; background: #fbeaea; color: #8f2525; }
+    .label-button.unsure:hover, .label-button.unsure.selected { border-color: #b87912; background: #fff3dc; color: #80550d; }
+    .empty { padding: 36px 18px; color: #68717a; text-align: center; }
+    .hidden { display: none !important; }
+    @media (max-width: 760px) {
+      header { align-items: flex-start; padding: 16px; }
+      .capture-meta { flex-direction: column; gap: 3px; text-align: right; }
+      .toolbar { align-items: flex-start; padding: 10px 16px; }
+      .workspace { grid-template-columns: 1fr; grid-template-rows: 180px minmax(0, 1fr); }
+      aside { border-right: 0; border-bottom: 1px solid #d9dde1; }
+      .review-panel { padding: 22px 16px 36px; }
+      .event-header { align-items: flex-end; }
+      .waveform-shell { min-height: 120px; }
+    }
+    @media (prefers-color-scheme: dark) {
+      :root, body { background: #171a1d; color: #f0f2f4; }
+      header, aside { background: #202428; }
+      header, .toolbar, aside, .candidate-row { border-color: #383e43; }
+      .capture-meta, .event-detail, .progress-text, .candidate-provisional, .audio-status { color: #aab1b7; }
+      .capture-meta strong { color: #f0f2f4; }
+      .toolbar { background: #292e33; }
+      .button, select, .label-button { background: #252a2f; border-color: #555d64; color: #f0f2f4; }
+      .button:hover, .candidate-row:hover { background: #30363c; }
+      .candidate-row.selected { background: #273d4d; }
+      main { background: #181c20; }
+      .label-button.tick:hover, .label-button.tick.selected { background: #183d29; color: #a7e8be; }
+      .label-button.noise:hover, .label-button.noise.selected { background: #482424; color: #f0b0b0; }
+      .label-button.unsure:hover, .label-button.unsure.selected { background: #473719; color: #f1d394; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div>
+        <h1>Tick Candidate Review</h1>
+        <div id="captureName" class="event-detail"></div>
+      </div>
+      <div class="capture-meta">
+        <span>BPH <strong id="knownBPH"></strong></span>
+        <span>DSP <strong id="dspQuality"></strong></span>
+        <span>Events <strong id="eventCount"></strong></span>
+      </div>
+    </header>
+    <div class="toolbar">
+      <div class="toolbar-group">
+        <select id="filter" aria-label="Candidate filter">
+          <option value="all">All candidates</option>
+          <option value="unreviewed">Unreviewed</option>
+          <option value="tick">Reviewed tick</option>
+          <option value="noise">Reviewed noise</option>
+          <option value="unsure">Reviewed unsure</option>
+        </select>
+        <button id="previous" class="button icon-button" type="button" title="Previous candidate" aria-label="Previous candidate">←</button>
+        <button id="next" class="button icon-button" type="button" title="Next candidate" aria-label="Next candidate">→</button>
+      </div>
+      <div class="toolbar-group">
+        <input id="importInput" class="hidden" type="file" accept="application/json">
+        <button id="import" class="button" type="button">Import labels</button>
+        <button id="reset" class="button danger" type="button">Reset</button>
+        <button id="export" class="button primary" type="button">Export labels</button>
+      </div>
+    </div>
+    <div class="workspace">
+      <aside>
+        <ul id="candidateList" class="candidate-list"></ul>
+        <div id="emptyList" class="empty hidden">No candidates in this filter.</div>
+      </aside>
+      <main>
+        <section id="reviewPanel" class="review-panel">
+          <div class="event-header">
+            <div>
+              <h2 id="eventTitle">Candidate</h2>
+              <div id="eventDetail" class="event-detail"></div>
+            </div>
+            <div id="progressText" class="progress-text"></div>
+          </div>
+          <div class="waveform-shell">
+            <canvas id="waveform" aria-label="Candidate waveform"></canvas>
+          </div>
+          <div class="transport">
+            <button id="play" class="button play-button" type="button">▶ Play context</button>
+          </div>
+          <div id="audioStatus" class="audio-status"></div>
+          <div class="label-control" role="group" aria-label="Reviewed candidate label">
+            <button class="label-button tick" data-label="tick" type="button">Tick</button>
+            <button class="label-button noise" data-label="noise" type="button">Noise</button>
+            <button class="label-button unsure" data-label="unsure" type="button">Unsure</button>
+          </div>
+        </section>
+        <div id="emptyReview" class="empty hidden">Select a candidate to review.</div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const reviewData = __REVIEW_DATA__;
+    const audioBase64 = "__AUDIO_BASE64__";
+    const storageKey = [
+      "chronobeat-review-v1",
+      reviewData.featureSchemaVersion,
+      reviewData.knownBPH,
+      reviewData.captureID
+    ].join("-");
+    const allowedLabels = new Set(["tick", "noise", "unsure"]);
+    const reviewEventIDs = new Set(reviewData.events.map(event => event.id));
+    const state = {
+      labels: loadSavedLabels(),
+      filter: "all",
+      currentID: reviewData.events[0]?.id ?? null,
+      audioContext: null,
+      audioBuffer: null,
+      activeSource: null
+    };
+
+    const elements = {
+      captureName: document.getElementById("captureName"),
+      knownBPH: document.getElementById("knownBPH"),
+      dspQuality: document.getElementById("dspQuality"),
+      eventCount: document.getElementById("eventCount"),
+      filter: document.getElementById("filter"),
+      previous: document.getElementById("previous"),
+      next: document.getElementById("next"),
+      importButton: document.getElementById("import"),
+      importInput: document.getElementById("importInput"),
+      reset: document.getElementById("reset"),
+      exportButton: document.getElementById("export"),
+      candidateList: document.getElementById("candidateList"),
+      emptyList: document.getElementById("emptyList"),
+      reviewPanel: document.getElementById("reviewPanel"),
+      emptyReview: document.getElementById("emptyReview"),
+      eventTitle: document.getElementById("eventTitle"),
+      eventDetail: document.getElementById("eventDetail"),
+      progressText: document.getElementById("progressText"),
+      waveform: document.getElementById("waveform"),
+      play: document.getElementById("play"),
+      audioStatus: document.getElementById("audioStatus"),
+      labelButtons: Array.from(document.querySelectorAll(".label-button"))
+    };
+
+    elements.captureName.textContent = reviewData.captureID;
+    elements.knownBPH.textContent = Number(reviewData.knownBPH).toLocaleString();
+    elements.dspQuality.textContent = reviewData.dspQuality;
+    elements.eventCount.textContent = Number(reviewData.reviewEventCount).toLocaleString();
+
+    function loadSavedLabels() {
+      try {
+        const value = JSON.parse(localStorage.getItem(storageKey) || "{}");
+        return Object.fromEntries(Object.entries(value).filter(([id, label]) =>
+          reviewEventIDs.has(id) && allowedLabels.has(label)
+        ));
+      } catch {
+        return {};
+      }
+    }
+
+    function saveLabels() {
+      try {
+        localStorage.setItem(storageKey, JSON.stringify(state.labels));
+      } catch {
+        // The in-memory review still works when browser storage is unavailable.
+      }
+    }
+
+    function filteredEvents() {
+      if (state.filter === "all") return reviewData.events;
+      if (state.filter === "unreviewed") {
+        return reviewData.events.filter(event => !state.labels[event.id]);
+      }
+      return reviewData.events.filter(event => state.labels[event.id] === state.filter);
+    }
+
+    function currentEvent() {
+      return reviewData.events.find(event => event.id === state.currentID) || null;
+    }
+
+    function ensureCurrentVisible() {
+      const visible = filteredEvents();
+      if (!visible.some(event => event.id === state.currentID)) {
+        state.currentID = visible[0]?.id ?? null;
+      }
+    }
+
+    function render() {
+      ensureCurrentVisible();
+      const visible = filteredEvents();
+      elements.candidateList.replaceChildren(...visible.map(event => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `candidate-row${event.id === state.currentID ? " selected" : ""}`;
+        row.addEventListener("click", () => {
+          state.currentID = event.id;
+          render();
+        });
+
+        const dot = document.createElement("span");
+        const reviewed = state.labels[event.id];
+        dot.className = `status-dot${reviewed ? ` ${reviewed}` : ""}`;
+        const body = document.createElement("span");
+        const time = document.createElement("span");
+        time.className = "candidate-time";
+        time.textContent = `${event.timeSeconds.toFixed(3)} sec`;
+        const provisional = document.createElement("span");
+        provisional.className = "candidate-provisional";
+        provisional.textContent = event.provisionalLabel;
+        body.append(time, document.createElement("br"), provisional);
+        const label = document.createElement("span");
+        label.className = "candidate-provisional";
+        label.textContent = reviewed || "—";
+        row.append(dot, body, label);
+        return row;
+      }));
+      elements.emptyList.classList.toggle("hidden", visible.length > 0);
+
+      const event = currentEvent();
+      elements.reviewPanel.classList.toggle("hidden", !event);
+      elements.emptyReview.classList.toggle("hidden", Boolean(event));
+      elements.previous.disabled = !event || visible.length < 2;
+      elements.next.disabled = !event || visible.length < 2;
+      if (!event) return;
+
+      const visibleIndex = visible.findIndex(item => item.id === event.id);
+      const reviewedCount = Object.keys(state.labels).length;
+      elements.eventTitle.textContent = `Candidate ${event.sampleIndex.toLocaleString()}`;
+      elements.eventDetail.textContent = `${event.timeSeconds.toFixed(4)} sec · envelope ${event.normalizedEnvelope.toFixed(3)} · provisional ${event.provisionalLabel}`;
+      elements.progressText.textContent = `${reviewedCount.toLocaleString()} reviewed · ${visibleIndex + 1} / ${visible.length}`;
+      elements.labelButtons.forEach(button => {
+        button.classList.toggle("selected", state.labels[event.id] === button.dataset.label);
+      });
+      drawWaveform(event.waveform);
+      document.querySelector(".candidate-row.selected")?.scrollIntoView({ block: "nearest" });
+    }
+
+    function move(delta) {
+      const visible = filteredEvents();
+      if (!visible.length) return;
+      const index = Math.max(0, visible.findIndex(event => event.id === state.currentID));
+      const nextIndex = (index + delta + visible.length) % visible.length;
+      state.currentID = visible[nextIndex].id;
+      render();
+    }
+
+    function applyLabel(label) {
+      const event = currentEvent();
+      if (!event || !allowedLabels.has(label)) return;
+      state.labels[event.id] = label;
+      saveLabels();
+      const previousID = event.id;
+      render();
+      if (state.currentID === previousID && state.filter !== "unreviewed") move(1);
+    }
+
+    function drawWaveform(points) {
+      const canvas = elements.waveform;
+      const bounds = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.round(bounds.width * ratio));
+      canvas.height = Math.max(1, Math.round(bounds.height * ratio));
+      const context = canvas.getContext("2d");
+      context.scale(ratio, ratio);
+      const width = bounds.width;
+      const height = bounds.height;
+      const centerY = height / 2;
+      context.clearRect(0, 0, width, height);
+      context.strokeStyle = "#46515a";
+      context.lineWidth = 1;
+      context.beginPath();
+      context.moveTo(0, centerY);
+      context.lineTo(width, centerY);
+      context.stroke();
+      context.strokeStyle = "#55b6de";
+      context.lineWidth = 1.5;
+      context.beginPath();
+      points.forEach((point, index) => {
+        const x = points.length > 1 ? index * width / (points.length - 1) : 0;
+        const y = centerY - point * centerY * 0.86;
+        if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+      });
+      context.stroke();
+      context.strokeStyle = "#e4a340";
+      context.beginPath();
+      context.moveTo(width / 2, 0);
+      context.lineTo(width / 2, height);
+      context.stroke();
+    }
+
+    async function loadAudio() {
+      if (state.audioBuffer) return state.audioBuffer;
+      elements.audioStatus.textContent = "Loading local audio…";
+      const binary = atob(audioBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      state.audioContext ||= new AudioContext();
+      state.audioBuffer = await state.audioContext.decodeAudioData(bytes.buffer);
+      elements.audioStatus.textContent = "";
+      return state.audioBuffer;
+    }
+
+    async function playContext() {
+      const event = currentEvent();
+      if (!event) return;
+      try {
+        const buffer = await loadAudio();
+        await state.audioContext.resume();
+        state.activeSource?.stop();
+        const source = state.audioContext.createBufferSource();
+        const gain = state.audioContext.createGain();
+        const compressor = state.audioContext.createDynamicsCompressor();
+        gain.gain.value = Math.min(80, Math.max(1, 0.15 / Math.max(event.localPeak, 0.000001)));
+        source.buffer = buffer;
+        source.connect(gain).connect(compressor).connect(state.audioContext.destination);
+        const start = Math.max(0, event.timeSeconds - 0.2);
+        const duration = Math.min(0.5, buffer.duration - start);
+        source.start(0, start, duration);
+        state.activeSource = source;
+        elements.audioStatus.textContent = `Playback gain ${gain.gain.value.toFixed(1)}×`;
+        source.addEventListener("ended", () => {
+          if (state.activeSource === source) state.activeSource = null;
+        });
+      } catch (error) {
+        elements.audioStatus.textContent = `Audio unavailable: ${error.message}`;
+      }
+    }
+
+    function exportLabels() {
+      const payload = {
+        schemaVersion: 1,
+        featureSchemaVersion: reviewData.featureSchemaVersion,
+        captureID: reviewData.captureID,
+        knownBPH: reviewData.knownBPH,
+        sourceReviewSchemaVersion: reviewData.schemaVersion,
+        reviewedAt: new Date().toISOString(),
+        events: reviewData.events.map(event => ({
+          id: event.id,
+          sampleIndex: event.sampleIndex,
+          normalizedEnvelope: event.normalizedEnvelope,
+          reviewedLabel: state.labels[event.id] || null
+        }))
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${reviewData.captureID.replace(/[^a-z0-9._-]+/gi, "-")}-reviewed-labels.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    }
+
+    async function importLabels(file) {
+      const payload = JSON.parse(await file.text());
+      if (payload.schemaVersion !== 1
+          || payload.sourceReviewSchemaVersion !== reviewData.schemaVersion
+          || payload.featureSchemaVersion !== reviewData.featureSchemaVersion
+          || payload.captureID !== reviewData.captureID
+          || payload.knownBPH !== reviewData.knownBPH
+          || !Array.isArray(payload.events)) {
+        throw new Error("Labels belong to another capture.");
+      }
+      const imported = {};
+      payload.events.forEach(event => {
+        if (reviewEventIDs.has(event.id) && allowedLabels.has(event.reviewedLabel)) {
+          imported[event.id] = event.reviewedLabel;
+        }
+      });
+      state.labels = imported;
+      saveLabels();
+      render();
+    }
+
+    elements.filter.addEventListener("change", () => {
+      state.filter = elements.filter.value;
+      render();
+    });
+    elements.previous.addEventListener("click", () => move(-1));
+    elements.next.addEventListener("click", () => move(1));
+    elements.play.addEventListener("click", playContext);
+    elements.labelButtons.forEach(button => {
+      button.addEventListener("click", () => applyLabel(button.dataset.label));
+    });
+    elements.exportButton.addEventListener("click", exportLabels);
+    elements.importButton.addEventListener("click", () => elements.importInput.click());
+    elements.importInput.addEventListener("change", async () => {
+      const file = elements.importInput.files?.[0];
+      if (!file) return;
+      try {
+        await importLabels(file);
+        elements.audioStatus.textContent = "Labels imported.";
+      } catch (error) {
+        elements.audioStatus.textContent = error.message;
+      } finally {
+        elements.importInput.value = "";
+      }
+    });
+    elements.reset.addEventListener("click", () => {
+      if (!confirm("Clear all reviewed labels for this capture?")) return;
+      state.labels = {};
+      saveLabels();
+      render();
+    });
+    window.addEventListener("resize", () => {
+      const event = currentEvent();
+      if (event) drawWaveform(event.waveform);
+    });
+    window.addEventListener("keydown", event => {
+      if (event.target.matches("select, input")) return;
+      if (event.key === "ArrowLeft") move(-1);
+      if (event.key === "ArrowRight") move(1);
+      if (event.key === " ") {
+        event.preventDefault();
+        playContext();
+      }
+      if (event.key === "1") applyLabel("tick");
+      if (event.key === "2") applyLabel("noise");
+      if (event.key === "3") applyLabel("unsure");
+    });
+
+    render();
+  </script>
+</body>
+</html>

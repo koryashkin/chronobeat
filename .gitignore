@@ -24,6 +24,7 @@ DebugCaptures/
 *.mlmodel
 *.mlpackage/
 *.mlmodelc/
+CandidateReviews/
 
 # Secrets
 .env

@@ -107,7 +107,7 @@ enum TickCandidateFeatureSchema {
         return TickCandidateFeatureVector(values: values.map { $0.isFinite ? $0 : 0 })
     }
 
-    private static func fixedRateSnippet(
+    static func fixedRateSnippet(
         samples: [Float],
         sampleRate: Double,
         centerIndex: Int

@@ -149,12 +149,14 @@ Sources/WatchAccuracyMeter/
   AudioCapture.swift
   AudioCaptureExporter.swift
   AudioWatchMeter.swift
+  CandidateReview.swift
   ContentView.swift
   MeasurementViewModel.swift
   TickCandidateFeatures.swift
   WatchAccuracyMeterApp.swift
   WatchDSP.swift
 Tests/WatchAccuracyMeterTests/
+  CandidateReviewTests.swift
   Fixtures/
   TickCandidateFeatureTests.swift
   WatchDSPTests.swift
@@ -164,6 +166,7 @@ Docs/
   ROADMAP.md
   VALIDATION_PLAN.md
 Tools/RecognitionBenchmark/
+Tools/CandidateReview/
 Tools/TickCandidateMLExperiment/
 project.yml
 WatchAccuracyMeter.xcodeproj/
@@ -186,6 +189,19 @@ Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
 
 See `Tools/TickCandidateMLExperiment/README.md` and
 `Docs/ON_DEVICE_ML_RESEARCH.md` for the current evidence and shipping gates.
+
+Manually review a balanced candidate sample without uploading audio:
+
+```sh
+Tools/CandidateReview/run-candidate-review \
+  /path/to/capture.wav \
+  28800 \
+  /tmp/watch-review
+```
+
+Open `/tmp/watch-review/review.html`, classify candidates, and export the label
+JSON. The private review package embeds the source audio and must not be added
+to git. See `Tools/CandidateReview/README.md` for the complete workflow.
 
 ## Product Limits
 

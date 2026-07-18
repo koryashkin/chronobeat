@@ -298,6 +298,14 @@ enum WatchDSP {
                                        audioStats: audioStats)
         let spectralEvidence = autoSpectralEvidence(samples: samples,
                                                     sampleRate: sampleRate)
+        return analyzeAuto(prepared: prepared,
+                           spectralEvidence: spectralEvidence)
+    }
+
+    private static func analyzeAuto(
+        prepared: PreparedAnalysis,
+        spectralEvidence: AutoSpectralEvidence
+    ) -> WatchMeasurementResult {
         let candidates = BeatRate.allCases.map { beatRate in
             let periodicity = spectralEvidence.periodicityScores[beatRate.rawValue] ?? 0
             let alternatingPeriodicity = spectralEvidence.alternatingPeriodicityScores[beatRate.rawValue] ?? 0
@@ -394,10 +402,35 @@ enum WatchDSP {
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
                                        audioStats: audioStats)
+        let preliminary = analyze(prepared: prepared,
+                                  selectedBPH: selectedBPH,
+                                  checksCompetingBeatRates: false,
+                                  isAutoBPH: isAutoBPH)
+        guard checksCompetingBeatRates,
+              !isAutoBPH,
+              preliminary.quality != .low else {
+            return preliminary
+        }
+
+        let spectralEvidence = autoSpectralEvidence(samples: samples,
+                                                    sampleRate: sampleRate)
+        let autoResult = analyzeAuto(prepared: prepared,
+                                     spectralEvidence: spectralEvidence)
+        if autoResult.quality != .low {
+            guard autoResult.selectedBPH != selectedBPH else {
+                return preliminary
+            }
+            return replacing(result: preliminary,
+                             quality: .low,
+                             qualityScore: min(preliminary.qualityScore, 49),
+                             recognitionConfidence: min(preliminary.recognitionConfidence, 0.49),
+                             dominantFailureReason: .wrongBPHLikely)
+        }
+
         return analyze(prepared: prepared,
                        selectedBPH: selectedBPH,
-                       checksCompetingBeatRates: checksCompetingBeatRates,
-                       isAutoBPH: isAutoBPH)
+                       checksCompetingBeatRates: true,
+                       isAutoBPH: false)
     }
 
     static func makeCandidateTrace(
@@ -759,7 +792,7 @@ enum WatchDSP {
                                       spectralPeriodicityScore: 0,
                                       alternatingSpectralPeriodicityScore: 0,
                                       alternatingSpectralConsensus: 0,
-                                      recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
+                                      recognitionConfidence: finalQuality == .low ? min(recognitionConfidence, 0.49) : recognitionConfidence,
                                       tickRecallEstimate: tickRecallEstimate,
                                       analysisWindowCount: fit.analysisWindowCount,
                                       successfulWindowCount: fit.successfulWindowCount,

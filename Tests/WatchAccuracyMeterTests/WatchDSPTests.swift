@@ -453,6 +453,40 @@ final class WatchDSPTests: XCTestCase {
         }
     }
 
+    func testTudorFullDeviceCaptureRejectsManualWrongBPHWithinThirtySeconds() throws {
+        let fixture = try loadFullTudorDeviceCapture()
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: BeatRate.bph21600.rawValue,
+                                      routeDescription: "Tudor GMT wrong manual BPH")
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+
+        XCTAssertLessThan(elapsed, 30, "Manual BPH verification exceeded the 30-second requirement.")
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .wrongBPHLikely)
+        XCTAssertLessThan(result.qualityScore, 50)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
+    }
+
+    func testTudorFixtureRejectsEverySupportedManualWrongBPH() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-20s")
+        let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
+
+        for beatRate in wrongBeatRates {
+            let result = WatchDSP.analyze(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          selectedBPH: beatRate,
+                                          routeDescription: "Tudor GMT wrong \(beatRate) BPH")
+
+            XCTAssertEqual(result.quality, .low, "Expected \(beatRate) BPH to be rejected.")
+            XCTAssertNotNil(result.dominantFailureReason)
+            XCTAssertLessThan(result.qualityScore, 50)
+            XCTAssertLessThan(result.recognitionConfidence, 0.50)
+        }
+    }
+
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
         let fixture = try loadFullTudorDeviceCapture()
 

@@ -238,6 +238,36 @@ their known BPH. This prevents poisoned labels, but it means the experiment
 cannot measure whether ML recovers failed captures. That requires manual event
 labels from both successful and failed recordings.
 
+### Manual candidate review
+
+`Tools/CandidateReview` closes that data gap without sending audio anywhere. It
+accepts a private recording plus known BPH, generates a balanced temporal sample
+of provisional tick, noise, and unknown events, and writes a standalone local
+HTML review package. Audio is embedded in the HTML, playback is amplified only
+for listening, and waveform previews do not alter the source used for features.
+
+The reviewer can mark `tick`, `noise`, or `unsure`, resume through local browser
+storage or imported labels, and export JSON containing sample indices and the
+versioned candidate envelope. Unreviewed and unsure events are excluded from ML
+training. The package contains private audio and must stay outside git.
+
+An ML manifest may specify `reviewLabelsPath` for each capture. Reviewed labels
+are consumed even when Auto BPH is low or disagrees with the known BPH, which is
+necessary to learn from current failures. Without a review file, the evaluator
+retains the existing provisional-label behavior and requires a usable correct
+DSP result. Reports distinguish reviewed, provisional, mixed, and ignored event
+counts; `productionEligible` remains false until all end-to-end gates pass.
+
+### Manual BPH disagreement regression
+
+While validating failed-capture review, the full Tudor recording exposed a
+separate false-confidence defect: manual 21,600 BPH returned Medium even though
+the known and confidently auto-detected rate is 28,800 BPH. Manual analysis now
+reuses the full Auto-BPH spectral and grid evidence over the same prepared
+signal. A non-low Auto winner that disagrees with the manual selection forces
+`wrongBPHLikely`; if Auto remains ambiguous, the prior grid-only competition is
+still used. The real 60-second regression must complete within 30 seconds.
+
 ## Dataset and labels
 
 ### Pilot dataset

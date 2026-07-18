@@ -16,6 +16,7 @@ Guidance for coding agents working on Watch Accuracy Meter.
 - `Tests/WatchAccuracyMeterTests/Fixtures/`: sanitized committed WAV regression fixtures only.
 - `Tools/RecognitionBenchmark/`: private full-capture replay and JSON reporting.
 - `Tools/TickCandidateMLExperiment/`: capture-safe Create ML feasibility evaluation.
+- `Tools/CandidateReview/`: local manual tick/noise review package generation.
 - `Docs/`: product and validation notes.
 - `project.yml`: XcodeGen source of truth.
 - `WatchAccuracyMeter.xcodeproj/`: generated project, tracked in git.
@@ -68,6 +69,19 @@ Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
 The ML experiment uses whole-watch holdouts and provisional DSP labels. Its
 output is research evidence only; never add a generated model to the app unless
 manually reviewed labels and the end-to-end acceptance gates pass.
+
+Generate a private manual-review package for a capture with known BPH:
+
+```sh
+Tools/CandidateReview/run-candidate-review \
+  /path/to/capture.wav \
+  28800 \
+  /tmp/watch-review
+```
+
+The generated `review.html` contains embedded private audio. Keep the package
+and exported labels outside git. Add `reviewLabelsPath` to a private ML manifest
+to use reviewed events; reviewed labels may come from captures DSP rejects.
 
 ## Audio/DSP Rules
 
