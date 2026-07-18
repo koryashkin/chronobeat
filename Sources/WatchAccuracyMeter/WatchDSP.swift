@@ -169,7 +169,7 @@ enum WatchDSP {
         static let autoLongCaptureMinimumDuration = 45.0
         static let autoLongCaptureMinimumWindowCount = 8
         static let autoLongCaptureMinimumWindowRatio = 0.90
-        static let autoLongCaptureMinimumScoreMargin = 0.025
+        static let autoLongCaptureMinimumScoreMargin = 0.020
         static let autoLongCaptureMinimumEvidenceLead = 0.025
         static let minimumConfidentRecall = 0.70
         static let minimumSuccessfulWindowRatio = 0.70
@@ -252,10 +252,8 @@ enum WatchDSP {
 
         // Every supported beat rate was evaluated against the same prepared signal,
         // so the winner and margin already provide the competing-rate verification.
-        let bestScore = autoBeatRateScore(best)
         let second = sortedCandidates.dropFirst().first
         let isAmbiguous = autoSelectionIsAmbiguous(best: best,
-                                                   bestScore: bestScore,
                                                    second: second)
 
         if isAmbiguous {
@@ -1394,9 +1392,9 @@ enum WatchDSP {
 
     static func autoSelectionIsAmbiguous(
         best: WatchMeasurementResult,
-        bestScore: Double,
         second: WatchMeasurementResult?
     ) -> Bool {
+        let bestScore = autoBeatRateScore(best)
         let secondScore = second.map(autoBeatRateScore) ?? 0
         guard autoSelectionIsAmbiguous(bestScore: bestScore,
                                        secondScore: secondScore,

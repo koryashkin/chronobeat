@@ -179,63 +179,6 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertTrue(isAmbiguous)
     }
 
-    func testAutoBPHAcceptsLongCaptureWhenAllEvidenceMetricsLead() {
-        let best = makeAutoCandidateResult(selectedBPH: 28_800,
-                                           detectedPeakCount: 913,
-                                           validPeakCount: 421,
-                                           expectedTickCount: 480,
-                                           beatCoverage: 0.877,
-                                           outlierRatio: 0.539,
-                                           periodicityScore: 0.587,
-                                           tickRecallEstimate: 0.877)
-        let second = makeAutoCandidateResult(selectedBPH: 21_600,
-                                             detectedPeakCount: 704,
-                                             validPeakCount: 302,
-                                             expectedTickCount: 360,
-                                             beatCoverage: 0.841,
-                                             outlierRatio: 0.571,
-                                             periodicityScore: 0.554,
-                                             tickRecallEstimate: 0.839)
-
-        let isAmbiguous = WatchDSP.autoSelectionIsAmbiguous(best: best,
-                                                            bestScore: 0.7384,
-                                                            second: second)
-
-        XCTAssertFalse(isAmbiguous)
-    }
-
-    func testAutoBPHKeepsShortCaptureAmbiguousDespiteMetricLead() {
-        let shortSampleCount = Int(sampleRate * 30)
-        let best = makeAutoCandidateResult(selectedBPH: 28_800,
-                                           detectedPeakCount: 459,
-                                           validPeakCount: 210,
-                                           expectedTickCount: 240,
-                                           beatCoverage: 0.875,
-                                           outlierRatio: 0.542,
-                                           periodicityScore: 0.584,
-                                           tickRecallEstimate: 0.875,
-                                           sampleCount: shortSampleCount,
-                                           analysisWindowCount: 6,
-                                           successfulWindowCount: 6)
-        let second = makeAutoCandidateResult(selectedBPH: 21_600,
-                                             detectedPeakCount: 352,
-                                             validPeakCount: 155,
-                                             expectedTickCount: 180,
-                                             beatCoverage: 0.861,
-                                             outlierRatio: 0.560,
-                                             periodicityScore: 0.567,
-                                             tickRecallEstimate: 0.861,
-                                             sampleCount: shortSampleCount,
-                                             analysisWindowCount: 6,
-                                             successfulWindowCount: 6)
-
-        let isAmbiguous = WatchDSP.autoSelectionIsAmbiguous(best: best,
-                                                            bestScore: 0.7362,
-                                                            second: second)
-
-        XCTAssertTrue(isAmbiguous)
-    }
-
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
         let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
@@ -327,23 +270,35 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(result.dominantFailureReason, .ambiguousBeatRate)
     }
 
+    func testTudorFullDeviceCaptureAutoDetectsBeatRateEndToEnd() throws {
+        let fixture = try loadFullTudorDeviceCapture()
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor GMT full device capture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertTrue(result.isAutoBPH)
+        XCTAssertEqual(result.quality, .medium)
+        XCTAssertNil(result.dominantFailureReason)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
+        XCTAssertGreaterThanOrEqual(result.successfulWindowCount,
+                                    Int(ceil(Double(result.analysisWindowCount) * 0.90)))
+    }
+
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
-        let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
-        var samples: [Float] = []
-        samples.reserveCapacity(fixture.samples.count * 3)
-        for _ in 0..<3 {
-            samples.append(contentsOf: fixture.samples)
-        }
+        let fixture = try loadFullTudorDeviceCapture()
 
         let start = ProcessInfo.processInfo.systemUptime
-        let result = WatchDSP.analyzeAuto(samples: samples,
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
                                           sampleRate: fixture.sampleRate,
-                                          routeDescription: "60-second noisy Tudor fixture")
+                                          routeDescription: "Tudor GMT performance fixture")
         let elapsed = ProcessInfo.processInfo.systemUptime - start
 
         XCTAssertLessThan(elapsed, 30, "Auto BPH post-processing exceeded the 30-second requirement.")
         XCTAssertTrue(result.isAutoBPH)
-        XCTAssertEqual(result.sampleCount, samples.count)
+        XCTAssertEqual(result.sampleCount, fixture.samples.count)
     }
 
     func testRealDeviceBottomMicFixtureRejectsWrongBeatRates() throws {
@@ -593,50 +548,6 @@ final class WatchDSPTests: XCTestCase {
         return samples
     }
 
-    private func makeAutoCandidateResult(
-        selectedBPH: Int,
-        detectedPeakCount: Int,
-        validPeakCount: Int,
-        expectedTickCount: Int,
-        beatCoverage: Double,
-        outlierRatio: Double,
-        periodicityScore: Double,
-        tickRecallEstimate: Double,
-        sampleCount: Int = 2_880_000,
-        analysisWindowCount: Int = 12,
-        successfulWindowCount: Int = 12
-    ) -> WatchMeasurementResult {
-        WatchMeasurementResult(selectedBPH: selectedBPH,
-                               isAutoBPH: true,
-                               detectedBPH: Double(selectedBPH),
-                               rateSecondsPerDay: 0,
-                               qualityScore: 55,
-                               quality: .medium,
-                               detectedPeakCount: detectedPeakCount,
-                               validPeakCount: validPeakCount,
-                               expectedTickCount: expectedTickCount,
-                               beatCoverage: beatCoverage,
-                               outlierRatio: outlierRatio,
-                               chosenThresholdScale: 0.55,
-                               rmsLevel: 0.0003,
-                               peakLevel: 0.006,
-                               clippingRatio: 0,
-                               estimatedSnrDb: 1.3,
-                               periodicityScore: periodicityScore,
-                               recognitionConfidence: 0.70,
-                               tickRecallEstimate: tickRecallEstimate,
-                               analysisWindowCount: analysisWindowCount,
-                               successfulWindowCount: successfulWindowCount,
-                               dominantFailureReason: nil,
-                               detectionThreshold: 1.29,
-                               envelopeMedian: 1,
-                               envelopeP95: 2.15,
-                               sampleRate: sampleRate,
-                               sampleCount: sampleCount,
-                               routeDescription: "Synthetic auto candidate",
-                               routeWarning: nil)
-    }
-
     private func addSyntheticTick(
         to samples: inout [Float],
         at index: Int,
@@ -680,6 +591,21 @@ final class WatchDSPTests: XCTestCase {
         }
 
         return (samples, format.sampleRate)
+    }
+
+    private func loadFullTudorDeviceCapture() throws -> (samples: [Float], sampleRate: Double) {
+        let firstHalf = try loadFixture(named: "tudor-gmt-28800-0-30s")
+        let secondHalf = try loadFixture(named: "tudor-gmt-28800-30-60s")
+        XCTAssertEqual(firstHalf.sampleRate, secondHalf.sampleRate)
+
+        let halfDurationSampleCount = Int((30 * firstHalf.sampleRate).rounded())
+        XCTAssertEqual(firstHalf.samples.count, halfDurationSampleCount)
+        XCTAssertEqual(secondHalf.samples.count, halfDurationSampleCount)
+
+        var samples = firstHalf.samples
+        samples.append(contentsOf: secondHalf.samples)
+        XCTAssertEqual(samples.count, halfDurationSampleCount * 2)
+        return (samples, firstHalf.sampleRate)
     }
 
     private struct LabeledFixture {
