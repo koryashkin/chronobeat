@@ -105,6 +105,7 @@ enum AudioCaptureExporter {
                                       clippingRatio: result.clippingRatio,
                                       estimatedSnrDb: result.estimatedSnrDb,
                                       periodicityScore: result.periodicityScore,
+                                      spectralPeriodicityScore: result.spectralPeriodicityScore,
                                       detectionThreshold: result.detectionThreshold,
                                       envelopeMedian: result.envelopeMedian,
                                       envelopeP95: result.envelopeP95,
@@ -160,6 +161,7 @@ private struct ExportManifest: Codable {
     let clippingRatio: Double
     let estimatedSnrDb: Double
     let periodicityScore: Double
+    let spectralPeriodicityScore: Double
     let detectionThreshold: Double
     let envelopeMedian: Double
     let envelopeP95: Double

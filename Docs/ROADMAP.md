@@ -28,7 +28,8 @@
 ## v0.4 - experimental on-device recognition
 
 - add a versioned real-capture benchmark manifest
-- evaluate a multi-band DSP candidate detector
+- use independent high-band periodicity to resolve strong Auto-BPH evidence
+- evaluate a multi-band candidate detector on additional quiet watches
 - collect and label tick/noise candidate snippets
 - train a small custom Core ML candidate verifier
 - compare DSP-only and hybrid recognition on frozen held-out captures

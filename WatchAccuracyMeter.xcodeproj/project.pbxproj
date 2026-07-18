@@ -20,6 +20,7 @@
 		A30D4144737B0E52DB2A153E /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */; };
 		B1CD19CEEA0BCC325C6FA74C /* king-seiko-28800-10-30s.wav in Resources */ = {isa = PBXBuildFile; fileRef = A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */; };
 		B663030ECD62538FB9F91A1E /* MeasurementViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18D45683291B66B03E6F7ACA /* MeasurementViewModel.swift */; };
+		E18B77ABBBAA25793B1055B0 /* recognition-fixtures.json in Resources */ = {isa = PBXBuildFile; fileRef = 9C8160892D225E370FD85EF6 /* recognition-fixtures.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +46,7 @@
 		8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "iphone-bottom-28800-0-20s.wav"; sourceTree = "<group>"; };
 		8D2CE8EC31135EE990F6F36F /* tudor-gmt-28800-30-60s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "tudor-gmt-28800-30-60s.wav"; sourceTree = "<group>"; };
 		97FF9BB9243E8812CA39FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		9C8160892D225E370FD85EF6 /* recognition-fixtures.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "recognition-fixtures.json"; sourceTree = "<group>"; };
 		A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "king-seiko-28800-10-30s.wav"; sourceTree = "<group>"; };
 		AD6A032089774DB52785B700 /* WatchDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSPTests.swift; sourceTree = "<group>"; };
 		D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -101,6 +103,7 @@
 			children = (
 				8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */,
 				A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */,
+				9C8160892D225E370FD85EF6 /* recognition-fixtures.json */,
 				27816CC42A33459E13F7531C /* tudor-gmt-28800-0-30s.wav */,
 				8D2CE8EC31135EE990F6F36F /* tudor-gmt-28800-30-60s.wav */,
 				3431EA4AA0BA863DA5293076 /* tudor-gmt-28800-40-60s.wav */,
@@ -189,6 +192,7 @@
 			files = (
 				42AE502C5041217E3FE2F066 /* iphone-bottom-28800-0-20s.wav in Resources */,
 				B1CD19CEEA0BCC325C6FA74C /* king-seiko-28800-10-30s.wav in Resources */,
+				E18B77ABBBAA25793B1055B0 /* recognition-fixtures.json in Resources */,
 				95E36DEB5B15B99C8DA31F31 /* tudor-gmt-28800-0-30s.wav in Resources */,
 				7976C49DABAF55DFAD70CD61 /* tudor-gmt-28800-30-60s.wav in Resources */,
 				919FA1A21384506CCCBF04C7 /* tudor-gmt-28800-40-60s.wav in Resources */,

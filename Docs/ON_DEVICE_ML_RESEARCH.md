@@ -130,6 +130,29 @@ few correlated windows and cannot prove the 90% Auto-BPH objective. The King
 Seiko result also shows why training and testing on only the Tudor capture would
 produce a misleading model.
 
+## High-band periodicity experiment
+
+The first non-ML experiment was implemented on 2026-07-18. It extracts an
+8-20 kHz transient envelope independently of the normal peak detector and
+measures autocorrelation at every supported BPH period. Strong evidence can add
+at most 0.08 to an otherwise valid Auto-BPH candidate score. It cannot change a
+low-quality grid into a usable result.
+
+On the 20-second Tudor fixture, 28,800 bph produced a high-band correlation of
+0.632; every wrong supported BPH was below zero. The iPhone bottom-mic fixture
+showed the same separation. The King Seiko fixture's strongest correlation was
+only 0.019, so it remains low quality rather than receiving an invented rate.
+
+For the reconstructed Tudor capture, Auto recognition improved from one of
+three 20-second windows to three of three. The formerly ambiguous 30-second
+second half now returns 28,800 bph with medium quality. These are correlated
+windows from one recording, so they demonstrate a useful mechanism but do not
+establish an accuracy percentage.
+
+The frozen fixture manifest is `recognition-fixtures.json`. It records source
+capture groups so future training and test tooling can prevent overlapping
+segments from leaking across data splits.
+
 ## Dataset and labels
 
 ### Pilot dataset
@@ -199,8 +222,9 @@ Do not enable the model in production unless all gates pass:
 
 1. Add a versioned fixture manifest and an offline evaluator that exports candidate
    snippets, labels, per-capture outcomes, and DSP-only baseline metrics.
-2. Add a multi-band DSP candidate source and compare it with the current single
-   transient envelope before introducing ML.
+2. Extend the validated high-band periodicity path into a multi-band candidate
+   source only if additional captures show that candidate recall remains the
+   limiting factor.
 3. Collect and label the pilot dataset, keeping private full captures outside git.
 4. Train the candidate verifier off-device and convert it to an iOS 17 ML Program.
 5. Add a `TickCandidateScoring` protocol with DSP-only and Core ML implementations.

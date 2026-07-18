@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "resourceName": "king-seiko-28800-10-30s",
+      "sourceCaptureID": "king-seiko-device-20260709",
+      "knownBPH": 28800,
+      "durationSeconds": 20,
+      "expectedAutoOutcome": "reject"
+    },
+    {
+      "resourceName": "iphone-bottom-28800-0-20s",
+      "sourceCaptureID": "iphone-bottom-reference",
+      "knownBPH": 28800,
+      "durationSeconds": 20,
+      "expectedAutoOutcome": "recognize"
+    },
+    {
+      "resourceName": "tudor-gmt-28800-40-60s",
+      "sourceCaptureID": "tudor-gmt-device-20260709",
+      "knownBPH": 28800,
+      "durationSeconds": 20,
+      "expectedAutoOutcome": "recognize"
+    },
+    {
+      "resourceName": "tudor-gmt-28800-0-30s",
+      "sourceCaptureID": "tudor-gmt-device-20260718",
+      "knownBPH": 28800,
+      "durationSeconds": 30,
+      "expectedAutoOutcome": "recognize"
+    },
+    {
+      "resourceName": "tudor-gmt-28800-30-60s",
+      "sourceCaptureID": "tudor-gmt-device-20260718",
+      "knownBPH": 28800,
+      "durationSeconds": 30,
+      "expectedAutoOutcome": "recognize"
+    }
+  ]
+}

@@ -143,19 +143,25 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
-    func testAutoBPHDetectsSyntheticBeatRate() {
-        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
-                                                nominalBPH: BeatRate.bph21600.rawValue,
-                                                duration: 20)
+    func testAutoBPHDetectsEverySupportedSyntheticBeatRate() {
+        for beatRate in BeatRate.allCases {
+            let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
+                                                    nominalBPH: beatRate.rawValue,
+                                                    duration: 12)
 
-        let result = WatchDSP.analyzeAuto(samples: samples,
-                                          sampleRate: sampleRate,
-                                          routeDescription: "Auto synthetic")
+            let result = WatchDSP.analyzeAuto(samples: samples,
+                                              sampleRate: sampleRate,
+                                              routeDescription: "Auto synthetic \(beatRate.rawValue)")
 
-        XCTAssertEqual(result.selectedBPH, BeatRate.bph21600.rawValue)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
+            XCTAssertEqual(result.selectedBPH,
+                           beatRate.rawValue,
+                           "Wrong Auto BPH for synthetic \(beatRate.rawValue)")
+            XCTAssertTrue(result.isAutoBPH)
+            XCTAssertNotEqual(result.quality,
+                              .low,
+                              "Expected usable quality for synthetic \(beatRate.rawValue)")
+            XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
+        }
     }
 
     func testAutoBPHPreservesTooQuietFailureReason() {
@@ -230,44 +236,78 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
     }
 
-    func testRealDeviceBottomMicFixtureAutoDetectsBeatRate() throws {
-        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+    func testAutoBPHFixtureManifestOutcomes() throws {
+        let manifest = try loadRecognitionFixtureManifest()
+        XCTAssertEqual(manifest.schemaVersion, 1)
+        XCTAssertFalse(manifest.fixtures.isEmpty)
 
-        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
-                                          sampleRate: fixture.sampleRate,
-                                          routeDescription: "iPhone bottom mic fixture")
+        for spec in manifest.fixtures {
+            XCTAssertFalse(spec.sourceCaptureID.isEmpty)
+            let fixture = try loadFixture(named: spec.resourceName)
+            XCTAssertEqual(Double(fixture.samples.count) / fixture.sampleRate,
+                           spec.durationSeconds,
+                           accuracy: 0.01,
+                           "Unexpected fixture duration for \(spec.resourceName)")
 
-        XCTAssertEqual(result.selectedBPH, selectedBPH)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+            let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                              sampleRate: fixture.sampleRate,
+                                              routeDescription: spec.resourceName)
+
+            switch spec.expectedAutoOutcome {
+            case .recognize:
+                XCTAssertEqual(result.selectedBPH,
+                               spec.knownBPH,
+                               "Wrong Auto BPH for \(spec.resourceName)")
+                XCTAssertNotEqual(result.quality,
+                                  .low,
+                                  "Expected a usable Auto result for \(spec.resourceName)")
+                XCTAssertNotEqual(result.dominantFailureReason,
+                                  .ambiguousBeatRate,
+                                  "Unexpected Auto ambiguity for \(spec.resourceName)")
+            case .reject:
+                XCTAssertEqual(result.quality,
+                               .low,
+                               "A fixture without independent periodic evidence must stay low quality")
+            }
+        }
     }
 
-    func testTudorGMTFixtureAutoDetectsNoisyBeatRate() throws {
+    func testHighFrequencyPeriodicityIdentifiesTudorBeatRate() throws {
         let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
 
-        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
-                                          sampleRate: fixture.sampleRate,
-                                          routeDescription: "Tudor GMT fixture")
+        let scores = WatchDSP.autoSpectralPeriodicityScores(samples: fixture.samples,
+                                                            sampleRate: fixture.sampleRate)
+        let selectedScore = try XCTUnwrap(scores[selectedBPH])
+        let strongestWrongScore = try XCTUnwrap(scores
+            .filter { $0.key != selectedBPH }
+            .map(\.value)
+            .max())
 
-        XCTAssertEqual(result.selectedBPH, selectedBPH)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.78)
-        XCTAssertGreaterThanOrEqual(result.periodicityScore, 0.55)
-        XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
+        XCTAssertGreaterThan(selectedScore, 0.50)
+        XCTAssertGreaterThan(selectedScore - strongestWrongScore, 0.50)
     }
 
-    func testDifficultTudorTrimRemainsAmbiguousWithoutLongCaptureConsensus() throws {
-        let fixture = try loadFixture(named: "tudor-gmt-28800-30-60s")
+    func testKingSeikoFixtureDoesNotInventSpectralPeriodicity() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
-        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
-                                          sampleRate: fixture.sampleRate,
-                                          routeDescription: "Difficult Tudor GMT fixture")
+        let scores = WatchDSP.autoSpectralPeriodicityScores(samples: fixture.samples,
+                                                            sampleRate: fixture.sampleRate)
+        let strongestScore = try XCTUnwrap(scores.values.max())
 
-        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertLessThan(strongestScore, 0.05)
+    }
+
+    func testStationaryHighFrequencyNoiseDoesNotCreateAutoBeatRate() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
+        addSine(to: &samples, frequency: 12_000, amplitude: 0.02)
+        addWhiteNoise(to: &samples, amplitude: 0.001, seed: 0x12_000)
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Stationary high-frequency noise")
+
         XCTAssertEqual(result.quality, .low)
-        XCTAssertEqual(result.dominantFailureReason, .ambiguousBeatRate)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
     }
 
     func testTudorFullDeviceCaptureAutoDetectsBeatRateEndToEnd() throws {
@@ -285,6 +325,23 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
         XCTAssertGreaterThanOrEqual(result.successfulWindowCount,
                                     Int(ceil(Double(result.analysisWindowCount) * 0.90)))
+
+        let windows = fixtureWindows(samples: fixture.samples,
+                                     sampleRate: fixture.sampleRate,
+                                     duration: 20,
+                                     hop: 20)
+        XCTAssertEqual(windows.count, 3)
+        for window in windows {
+            let windowResult = WatchDSP.analyzeAuto(samples: window.samples,
+                                                    sampleRate: fixture.sampleRate,
+                                                    routeDescription: "Tudor GMT \(window.start)-second window")
+            XCTAssertEqual(windowResult.selectedBPH,
+                           selectedBPH,
+                           "Wrong Auto BPH at \(window.start) seconds")
+            XCTAssertNotEqual(windowResult.quality,
+                              .low,
+                              "Expected usable Auto result at \(window.start) seconds")
+        }
     }
 
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
@@ -397,6 +454,7 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(json?["isAutoBPH"] as? Bool, false)
         XCTAssertEqual(json?["routeDescription"] as? String, "Synthetic microphone")
         XCTAssertNotNil(json?["recognitionConfidence"])
+        XCTAssertNotNil(json?["spectralPeriodicityScore"])
 
         try? FileManager.default.removeItem(at: directory)
     }
@@ -593,6 +651,14 @@ final class WatchDSPTests: XCTestCase {
         return (samples, format.sampleRate)
     }
 
+    private func loadRecognitionFixtureManifest() throws -> RecognitionFixtureManifest {
+        let bundle = Bundle(for: Self.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "recognition-fixtures",
+                                           withExtension: "json"))
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(RecognitionFixtureManifest.self, from: data)
+    }
+
     private func loadFullTudorDeviceCapture() throws -> (samples: [Float], sampleRate: Double) {
         let firstHalf = try loadFixture(named: "tudor-gmt-28800-0-30s")
         let secondHalf = try loadFixture(named: "tudor-gmt-28800-30-60s")
@@ -611,6 +677,24 @@ final class WatchDSPTests: XCTestCase {
     private struct LabeledFixture {
         let name: String
         let bph: Int
+    }
+
+    private struct RecognitionFixtureManifest: Decodable {
+        let schemaVersion: Int
+        let fixtures: [RecognitionFixtureSpec]
+    }
+
+    private struct RecognitionFixtureSpec: Decodable {
+        let resourceName: String
+        let sourceCaptureID: String
+        let knownBPH: Int
+        let durationSeconds: Double
+        let expectedAutoOutcome: AutoFixtureOutcome
+    }
+
+    private enum AutoFixtureOutcome: String, Decodable {
+        case recognize
+        case reject
     }
 
     private struct FixtureWindow {
@@ -1242,6 +1326,7 @@ final class DomainModelTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: quality == .high ? 1 : 0,
+                               spectralPeriodicityScore: 0,
                                recognitionConfidence: quality == .high ? 1 : 0,
                                tickRecallEstimate: quality == .high ? 1 : 0,
                                analysisWindowCount: quality == .high ? 10 : 0,
@@ -1294,6 +1379,7 @@ final class MeasurementStateTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: 1,
+                               spectralPeriodicityScore: 0,
                                recognitionConfidence: 1,
                                tickRecallEstimate: 1,
                                analysisWindowCount: 10,

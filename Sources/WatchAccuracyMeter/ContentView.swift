@@ -182,6 +182,7 @@ struct ResultView: View {
                 Text("Beat coverage: \(String(format: "%.1f", result.beatCoverage * 100))%")
                 Text("Outlier ratio: \(String(format: "%.1f", result.outlierRatio * 100))%")
                 Text("Periodicity: \(String(format: "%.2f", result.periodicityScore))")
+                Text("High-band periodicity: \(String(format: "%.2f", result.spectralPeriodicityScore))")
                 Text("Recognition confidence: \(String(format: "%.1f", result.recognitionConfidence * 100))%")
                 Text("Tick recall estimate: \(String(format: "%.1f", result.tickRecallEstimate * 100))%")
                 Text("Windows: \(result.successfulWindowCount) / \(result.analysisWindowCount)")
