@@ -179,6 +179,63 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertTrue(isAmbiguous)
     }
 
+    func testAutoBPHAcceptsLongCaptureWhenAllEvidenceMetricsLead() {
+        let best = makeAutoCandidateResult(selectedBPH: 28_800,
+                                           detectedPeakCount: 913,
+                                           validPeakCount: 421,
+                                           expectedTickCount: 480,
+                                           beatCoverage: 0.877,
+                                           outlierRatio: 0.539,
+                                           periodicityScore: 0.587,
+                                           tickRecallEstimate: 0.877)
+        let second = makeAutoCandidateResult(selectedBPH: 21_600,
+                                             detectedPeakCount: 704,
+                                             validPeakCount: 302,
+                                             expectedTickCount: 360,
+                                             beatCoverage: 0.841,
+                                             outlierRatio: 0.571,
+                                             periodicityScore: 0.554,
+                                             tickRecallEstimate: 0.839)
+
+        let isAmbiguous = WatchDSP.autoSelectionIsAmbiguous(best: best,
+                                                            bestScore: 0.7384,
+                                                            second: second)
+
+        XCTAssertFalse(isAmbiguous)
+    }
+
+    func testAutoBPHKeepsShortCaptureAmbiguousDespiteMetricLead() {
+        let shortSampleCount = Int(sampleRate * 30)
+        let best = makeAutoCandidateResult(selectedBPH: 28_800,
+                                           detectedPeakCount: 459,
+                                           validPeakCount: 210,
+                                           expectedTickCount: 240,
+                                           beatCoverage: 0.875,
+                                           outlierRatio: 0.542,
+                                           periodicityScore: 0.584,
+                                           tickRecallEstimate: 0.875,
+                                           sampleCount: shortSampleCount,
+                                           analysisWindowCount: 6,
+                                           successfulWindowCount: 6)
+        let second = makeAutoCandidateResult(selectedBPH: 21_600,
+                                             detectedPeakCount: 352,
+                                             validPeakCount: 155,
+                                             expectedTickCount: 180,
+                                             beatCoverage: 0.861,
+                                             outlierRatio: 0.560,
+                                             periodicityScore: 0.567,
+                                             tickRecallEstimate: 0.861,
+                                             sampleCount: shortSampleCount,
+                                             analysisWindowCount: 6,
+                                             successfulWindowCount: 6)
+
+        let isAmbiguous = WatchDSP.autoSelectionIsAmbiguous(best: best,
+                                                            bestScore: 0.7362,
+                                                            second: second)
+
+        XCTAssertTrue(isAmbiguous)
+    }
+
     func testKingSeikoFixtureDetectsRealTickGrid() throws {
         let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
 
@@ -256,6 +313,18 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.78)
         XCTAssertGreaterThanOrEqual(result.periodicityScore, 0.55)
         XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
+    }
+
+    func testDifficultTudorTrimRemainsAmbiguousWithoutLongCaptureConsensus() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-30-60s")
+
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Difficult Tudor GMT fixture")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .ambiguousBeatRate)
     }
 
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
@@ -522,6 +591,50 @@ final class WatchDSPTests: XCTestCase {
         }
 
         return samples
+    }
+
+    private func makeAutoCandidateResult(
+        selectedBPH: Int,
+        detectedPeakCount: Int,
+        validPeakCount: Int,
+        expectedTickCount: Int,
+        beatCoverage: Double,
+        outlierRatio: Double,
+        periodicityScore: Double,
+        tickRecallEstimate: Double,
+        sampleCount: Int = 2_880_000,
+        analysisWindowCount: Int = 12,
+        successfulWindowCount: Int = 12
+    ) -> WatchMeasurementResult {
+        WatchMeasurementResult(selectedBPH: selectedBPH,
+                               isAutoBPH: true,
+                               detectedBPH: Double(selectedBPH),
+                               rateSecondsPerDay: 0,
+                               qualityScore: 55,
+                               quality: .medium,
+                               detectedPeakCount: detectedPeakCount,
+                               validPeakCount: validPeakCount,
+                               expectedTickCount: expectedTickCount,
+                               beatCoverage: beatCoverage,
+                               outlierRatio: outlierRatio,
+                               chosenThresholdScale: 0.55,
+                               rmsLevel: 0.0003,
+                               peakLevel: 0.006,
+                               clippingRatio: 0,
+                               estimatedSnrDb: 1.3,
+                               periodicityScore: periodicityScore,
+                               recognitionConfidence: 0.70,
+                               tickRecallEstimate: tickRecallEstimate,
+                               analysisWindowCount: analysisWindowCount,
+                               successfulWindowCount: successfulWindowCount,
+                               dominantFailureReason: nil,
+                               detectionThreshold: 1.29,
+                               envelopeMedian: 1,
+                               envelopeP95: 2.15,
+                               sampleRate: sampleRate,
+                               sampleCount: sampleCount,
+                               routeDescription: "Synthetic auto candidate",
+                               routeWarning: nil)
     }
 
     private func addSyntheticTick(
