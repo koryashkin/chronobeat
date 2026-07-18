@@ -8,11 +8,13 @@
 
 /* Begin PBXBuildFile section */
 		42AE502C5041217E3FE2F066 /* iphone-bottom-28800-0-20s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */; };
+		48D39CFEA2788D467BDA1ABB /* TickCandidateFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83F6B61D11009AF5D0EDFD17 /* TickCandidateFeatureTests.swift */; };
 		4926A74A1555E29B3F605E0A /* AudioWatchMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */; };
 		4F0297FC9F66107E3D8EDCFB /* WatchAccuracyMeterApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */; };
 		5FE6A2AEF60D91B02575618F /* WatchDSPTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD6A032089774DB52785B700 /* WatchDSPTests.swift */; };
 		642AC5BA09D443AAD50E2388 /* WatchDSP.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */; };
 		7976C49DABAF55DFAD70CD61 /* tudor-gmt-28800-30-60s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 8D2CE8EC31135EE990F6F36F /* tudor-gmt-28800-30-60s.wav */; };
+		804DEF0F102EDC5AD5608E1C /* TickCandidateFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 709C7DC8A380EFF89C0D89E4 /* TickCandidateFeatures.swift */; };
 		916D1AAB0D661A422094DE19 /* AudioCaptureExporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AF96C8506B6D6BBC3F26105 /* AudioCaptureExporter.swift */; };
 		919FA1A21384506CCCBF04C7 /* tudor-gmt-28800-40-60s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 3431EA4AA0BA863DA5293076 /* tudor-gmt-28800-40-60s.wav */; };
 		95E36DEB5B15B99C8DA31F31 /* tudor-gmt-28800-0-30s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 27816CC42A33459E13F7531C /* tudor-gmt-28800-0-30s.wav */; };
@@ -44,7 +46,9 @@
 		3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchAccuracyMeterApp.swift; sourceTree = "<group>"; };
 		3431EA4AA0BA863DA5293076 /* tudor-gmt-28800-40-60s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "tudor-gmt-28800-40-60s.wav"; sourceTree = "<group>"; };
 		497144F15FA91B5380E79D32 /* WatchAccuracyMeter.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = WatchAccuracyMeter.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		709C7DC8A380EFF89C0D89E4 /* TickCandidateFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickCandidateFeatures.swift; sourceTree = "<group>"; };
 		76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSP.swift; sourceTree = "<group>"; };
+		83F6B61D11009AF5D0EDFD17 /* TickCandidateFeatureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TickCandidateFeatureTests.swift; sourceTree = "<group>"; };
 		8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "iphone-bottom-28800-0-20s.wav"; sourceTree = "<group>"; };
 		8D2CE8EC31135EE990F6F36F /* tudor-gmt-28800-30-60s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "tudor-gmt-28800-30-60s.wav"; sourceTree = "<group>"; };
 		97FF9BB9243E8812CA39FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -68,6 +72,7 @@
 		A1FF4AEA1904A892D3C3D49F /* WatchAccuracyMeterTests */ = {
 			isa = PBXGroup;
 			children = (
+				83F6B61D11009AF5D0EDFD17 /* TickCandidateFeatureTests.swift */,
 				AD6A032089774DB52785B700 /* WatchDSPTests.swift */,
 				F7055FBA4655093767D5F4C2 /* Fixtures */,
 			);
@@ -84,6 +89,7 @@
 				D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */,
 				97FF9BB9243E8812CA39FEEB /* Info.plist */,
 				18D45683291B66B03E6F7ACA /* MeasurementViewModel.swift */,
+				709C7DC8A380EFF89C0D89E4 /* TickCandidateFeatures.swift */,
 				3172974C9EA67AFF157A56BC /* WatchAccuracyMeterApp.swift */,
 				76BD0047E4B72D42B8AB5DDF /* WatchDSP.swift */,
 			);
@@ -210,6 +216,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				48D39CFEA2788D467BDA1ABB /* TickCandidateFeatureTests.swift in Sources */,
 				5FE6A2AEF60D91B02575618F /* WatchDSPTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -223,6 +230,7 @@
 				4926A74A1555E29B3F605E0A /* AudioWatchMeter.swift in Sources */,
 				A30D4144737B0E52DB2A153E /* ContentView.swift in Sources */,
 				B663030ECD62538FB9F91A1E /* MeasurementViewModel.swift in Sources */,
+				804DEF0F102EDC5AD5608E1C /* TickCandidateFeatures.swift in Sources */,
 				4F0297FC9F66107E3D8EDCFB /* WatchAccuracyMeterApp.swift in Sources */,
 				642AC5BA09D443AAD50E2388 /* WatchDSP.swift in Sources */,
 			);

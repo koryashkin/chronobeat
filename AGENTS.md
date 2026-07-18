@@ -15,6 +15,7 @@ Guidance for coding agents working on Watch Accuracy Meter.
 - `Tests/WatchAccuracyMeterTests/`: unit tests and audio fixtures.
 - `Tests/WatchAccuracyMeterTests/Fixtures/`: sanitized committed WAV regression fixtures only.
 - `Tools/RecognitionBenchmark/`: private full-capture replay and JSON reporting.
+- `Tools/TickCandidateMLExperiment/`: capture-safe Create ML feasibility evaluation.
 - `Docs/`: product and validation notes.
 - `project.yml`: XcodeGen source of truth.
 - `WatchAccuracyMeter.xcodeproj/`: generated project, tracked in git.
@@ -53,6 +54,20 @@ Tools/RecognitionBenchmark/run-recognition-benchmark /path/to/manifest.json > /t
 Do not treat overlapping-window results as independent. The report's acceptance
 gate remains ineligible until it contains at least 100 windows from 20 unique
 captures, five watches, and two devices.
+
+Evaluate experimental candidate models without adding models or reports to git:
+
+```sh
+Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
+  /path/to/manifest.json \
+  --model-type logistic \
+  --model-output /tmp/tick-candidate.mlmodel \
+  > /tmp/tick-candidate-report.json
+```
+
+The ML experiment uses whole-watch holdouts and provisional DSP labels. Its
+output is research evidence only; never add a generated model to the app unless
+manually reviewed labels and the end-to-end acceptance gates pass.
 
 ## Audio/DSP Rules
 

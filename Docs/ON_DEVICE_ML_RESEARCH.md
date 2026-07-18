@@ -202,6 +202,42 @@ overlapping window, and emits JSON. On the four supplied captures it reports
 at 28,800 bph. Those windows come from only two watches at one BPH, so the report
 correctly keeps `acceptanceGateEligible` and `acceptanceGatePassed` false.
 
+## Candidate verifier feasibility experiment
+
+`Tools/TickCandidateMLExperiment` now regenerates candidate traces from private
+captures, extracts a versioned 2,048-frame transient feature vector, and trains
+Create ML classifiers. It never uses distance to the fitted beat grid as an
+input feature. Complete watches, rather than candidate snippets or overlapping
+windows, are held out for evaluation.
+
+The initial run used all four supplied 60-second captures. The DSP proposed
+8,730 labeled candidates and 1,530 unknown candidates; unknown events were
+excluded. Labels remain provisional DSP outputs, not manually reviewed ground
+truth. With each model trained on one watch and tested on the other:
+
+| Experimental classifier | Precision | Recall | F1 |
+| --- | ---: | ---: | ---: |
+| Envelope threshold | 20.0% | 99.9% | 0.333 |
+| Create ML logistic regression | 30.0% | 56.4% | 0.392 |
+| Create ML boosted tree | 27.2% | 63.2% | 0.381 |
+
+Neither learned model approaches the 98% precision and 90% recall candidate
+gate. The nonlinear model also fails to improve on logistic regression, so the
+result is not merely a linear-capacity problem. This is evidence against adding
+the current model to the app: it would reject many real ticks and accept too
+many noise candidates when the movement changes.
+
+Deployment itself is feasible. The logistic model is about 8 KB, compiles with
+Apple's `coremlcompiler`, and produces an approximately 32 KB compiled artifact.
+The missing ingredient is representative, manually reviewed data, not an iOS
+runtime or model-size workaround. Generated models remain outside git and
+`productionEligible` is always false in this weak-label experiment.
+
+The tool also refuses to label captures that are low quality or disagree with
+their known BPH. This prevents poisoned labels, but it means the experiment
+cannot measure whether ML recovers failed captures. That requires manual event
+labels from both successful and failed recordings.
+
 ## Dataset and labels
 
 ### Pilot dataset

@@ -151,10 +151,12 @@ Sources/WatchAccuracyMeter/
   AudioWatchMeter.swift
   ContentView.swift
   MeasurementViewModel.swift
+  TickCandidateFeatures.swift
   WatchAccuracyMeterApp.swift
   WatchDSP.swift
 Tests/WatchAccuracyMeterTests/
   Fixtures/
+  TickCandidateFeatureTests.swift
   WatchDSPTests.swift
 Docs/
   MVP_Technical_Document.md
@@ -162,9 +164,28 @@ Docs/
   ROADMAP.md
   VALIDATION_PLAN.md
 Tools/RecognitionBenchmark/
+Tools/TickCandidateMLExperiment/
 project.yml
 WatchAccuracyMeter.xcodeproj/
 ```
+
+## Experimental on-device ML
+
+An offline Create ML experiment evaluates whether transient-shape features can
+separate provisional ticks from noise while holding out complete watches. It
+can produce a small Core ML model for technical validation, but generated
+models remain ignored and are not used by the app.
+
+```sh
+Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
+  /path/to/manifest.json \
+  --model-type logistic \
+  --model-output /tmp/tick-candidate.mlmodel \
+  > /tmp/tick-candidate-report.json
+```
+
+See `Tools/TickCandidateMLExperiment/README.md` and
+`Docs/ON_DEVICE_ML_RESEARCH.md` for the current evidence and shipping gates.
 
 ## Product Limits
 

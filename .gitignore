@@ -20,5 +20,10 @@ xcuserdata/
 DebugCaptures/
 !Tests/WatchAccuracyMeterTests/Fixtures/*.wav
 
+# Experimental ML artifacts
+*.mlmodel
+*.mlpackage/
+*.mlmodelc/
+
 # Secrets
 .env
