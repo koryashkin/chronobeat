@@ -101,6 +101,9 @@ struct WatchMeasurementResult: Sendable {
     let clippingRatio: Double
     let estimatedSnrDb: Double
     let periodicityScore: Double
+    let spectralPeriodicityScore: Double
+    let alternatingSpectralPeriodicityScore: Double
+    let alternatingSpectralConsensus: Double
     let recognitionConfidence: Double
     let tickRecallEstimate: Double
     let analysisWindowCount: Int
@@ -160,6 +163,99 @@ struct WatchMeasurementResult: Sendable {
     }
 }
 
+enum TickCandidateProvisionalLabel: String, Codable, Sendable {
+    case likelyTick
+    case likelyNoise
+    case unknown
+}
+
+struct TickCandidateEvent: Codable, Sendable {
+    let sampleIndex: Int
+    let timeSeconds: Double
+    let normalizedEnvelope: Double
+    let nearestAssignedDistanceSeconds: Double?
+    let provisionalLabel: TickCandidateProvisionalLabel
+}
+
+struct TickCandidateTrace: Codable, Sendable {
+    let schemaVersion: Int
+    let selectedBPH: Int
+    let isAutoBPH: Bool
+    let resultQuality: String
+    let sampleRate: Double
+    let sampleCount: Int
+    let snippetFrameCount: Int
+    let snippetCenterOffset: Int
+    let labelingPolicy: String
+    let eventSelectionPolicy: String
+    let sourceCandidateCount: Int
+    let mergedCandidateCount: Int
+    let events: [TickCandidateEvent]
+}
+
+struct TickCandidateWeight: Equatable, Sendable {
+    let sampleIndex: Int
+    let score: Double
+}
+
+// Research-only input for offline hybrid replay. Production analysis supplies no weights.
+struct TickCandidateWeighting: Sendable {
+    let weights: [TickCandidateWeight]
+
+    init(weights: [TickCandidateWeight]) {
+        let valid = weights.filter { $0.sampleIndex >= 0 && $0.score.isFinite }
+        let strongestByIndex = Dictionary(grouping: valid, by: \.sampleIndex).compactMap { sampleIndex, values in
+            values.map(\.score).max().map {
+                TickCandidateWeight(sampleIndex: sampleIndex,
+                                    score: max(0, min(1, $0)))
+            }
+        }
+        self.weights = strongestByIndex.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    func score(near sampleIndex: Int, toleranceSamples: Int) -> Double? {
+        guard toleranceSamples >= 0, !weights.isEmpty else { return nil }
+
+        var lower = 0
+        var upper = weights.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if weights[middle].sampleIndex < sampleIndex {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        var nearest: TickCandidateWeight?
+        if lower < weights.count {
+            nearest = weights[lower]
+        }
+        if lower > 0 {
+            let previous = weights[lower - 1]
+            if let currentNearest = nearest {
+                if abs(previous.sampleIndex - sampleIndex)
+                    <= abs(currentNearest.sampleIndex - sampleIndex) {
+                    nearest = previous
+                }
+            } else {
+                nearest = previous
+            }
+        }
+        guard let nearest,
+              abs(nearest.sampleIndex - sampleIndex) <= toleranceSamples else {
+            return nil
+        }
+        return nearest.score
+    }
+}
+
+struct TickCandidatePool: Sendable {
+    let sourceCandidateCount: Int
+    let mergedCandidateCount: Int
+    let events: [TickCandidateEvent]
+}
+
 enum WatchDSP {
     private enum DSPConfiguration {
         static let autoMinimumScore = 0.58
@@ -180,6 +276,31 @@ enum WatchDSP {
         static let tickHighPassCutoffHz = 180.0
         static let transientSignalWeight: Float = 0.35
         static let transientDerivativeWeight: Float = 0.55
+        static let autoSpectralHighPassHz = 8_000.0
+        static let autoSpectralLowPassHz = 20_000.0
+        static let autoSpectralMinimumUsefulPeriodicity = 0.12
+        static let autoSpectralFullStrengthPeriodicity = 0.50
+        static let autoSpectralMaximumScoreBoost = 0.08
+        static let autoAlternatingWindowDuration = 5.0
+        static let autoAlternatingMinimumWindowCount = 3
+        static let autoAlternatingMinimumWindowPeriodicity = 0.005
+        static let autoAlternatingMinimumWindowMargin = 0.010
+        static let autoAlternatingMinimumFullPeriodicity = 0.030
+        static let autoAlternatingMinimumFullMargin = 0.025
+        static let autoIndependentMinimumScoreMargin = 0.020
+        static let autoIndependentMinimumCoverage = 0.80
+        static let autoIndependentMinimumRecall = 0.80
+        static let autoIndependentMinimumSinglePeriodicity = 0.20
+        static let autoIndependentMinimumSingleLead = 0.15
+    }
+
+    private enum CandidateTraceConfiguration {
+        static let maximumEventCount = 4_000
+        static let duplicateMergeSeconds = 0.005
+        static let minimumUnknownCount = 256
+        static let minimumNoiseCount = 512
+        static let unknownsPerTick = 2
+        static let noiseEventsPerTick = 4
     }
 
     private struct PreparedAnalysis {
@@ -191,18 +312,42 @@ enum WatchDSP {
         let peakDetectionContext: PeakDetectionContext
     }
 
+    private struct AutoCandidate {
+        let result: WatchMeasurementResult
+        let score: Double
+    }
+
+    private struct AutoSpectralEvidence {
+        let periodicityScores: [Int: Double]
+        let alternatingPeriodicityScores: [Int: Double]
+        let alternatingConsensusScores: [Int: Double]
+    }
+
     static func analyzeAuto(capture: AudioCapture) -> WatchMeasurementResult {
         analyzeAuto(samples: capture.samples,
                     sampleRate: capture.sampleRate,
                     routeDescription: capture.routeDescription,
-                    routeWarning: capture.routeWarning)
+                    routeWarning: capture.routeWarning,
+                    candidateWeighting: nil)
+    }
+
+    static func analyzeAuto(
+        capture: AudioCapture,
+        candidateWeighting: TickCandidateWeighting
+    ) -> WatchMeasurementResult {
+        analyzeAuto(samples: capture.samples,
+                    sampleRate: capture.sampleRate,
+                    routeDescription: capture.routeDescription,
+                    routeWarning: capture.routeWarning,
+                    candidateWeighting: candidateWeighting)
     }
 
     static func analyzeAuto(
         samples: [Float],
         sampleRate: Double,
         routeDescription: String = "Unknown",
-        routeWarning: String? = nil
+        routeWarning: String? = nil,
+        candidateWeighting: TickCandidateWeighting? = nil
     ) -> WatchMeasurementResult {
         let audioStats = AudioLevelStats.measure(samples)
         guard samples.count > Int(sampleRate * 10) else {
@@ -226,18 +371,41 @@ enum WatchDSP {
                                        sampleRate: sampleRate,
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
-                                       audioStats: audioStats)
+                                       audioStats: audioStats,
+                                       candidateWeighting: candidateWeighting)
+        let spectralEvidence = autoSpectralEvidence(samples: samples,
+                                                    sampleRate: sampleRate)
+        return analyzeAuto(prepared: prepared,
+                           spectralEvidence: spectralEvidence)
+    }
+
+    private static func analyzeAuto(
+        prepared: PreparedAnalysis,
+        spectralEvidence: AutoSpectralEvidence
+    ) -> WatchMeasurementResult {
         let candidates = BeatRate.allCases.map { beatRate in
-            analyze(prepared: prepared,
-                    selectedBPH: beatRate.rawValue,
-                    checksCompetingBeatRates: false,
-                    isAutoBPH: true)
+            let periodicity = spectralEvidence.periodicityScores[beatRate.rawValue] ?? 0
+            let alternatingPeriodicity = spectralEvidence.alternatingPeriodicityScores[beatRate.rawValue] ?? 0
+            let alternatingConsensus = spectralEvidence.alternatingConsensusScores[beatRate.rawValue] ?? 0
+            let analyzed = analyze(prepared: prepared,
+                                   selectedBPH: beatRate.rawValue,
+                                   checksCompetingBeatRates: false,
+                                   isAutoBPH: true)
+            let result = replacing(result: analyzed,
+                                   spectralPeriodicityScore: periodicity,
+                                   alternatingSpectralPeriodicityScore: alternatingPeriodicity,
+                                   alternatingSpectralConsensus: alternatingConsensus)
+            let score = autoBeatRateScore(result)
+                + max(autoSpectralScoreBoost(periodicity: periodicity),
+                      autoAlternatingScoreBoost(consensus: alternatingConsensus,
+                                                result: result))
+            return AutoCandidate(result: result, score: min(1, score))
         }
         let sortedCandidates = candidates.sorted { lhs, rhs in
-            autoBeatRateScore(lhs) > autoBeatRateScore(rhs)
+            lhs.score > rhs.score
         }
 
-        guard let best = sortedCandidates.first else {
+        guard let bestCandidate = sortedCandidates.first else {
             return fallback(selectedBPH: BeatRate.bph28800.rawValue,
                             reasonScore: 0,
                             detectionStats: .empty,
@@ -249,12 +417,11 @@ enum WatchDSP {
                             routeWarning: prepared.routeWarning,
                             isAutoBPH: true)
         }
+        let best = bestCandidate.result
 
         // Every supported beat rate was evaluated against the same prepared signal,
         // so the winner and margin already provide the competing-rate verification.
-        let second = sortedCandidates.dropFirst().first
-        let isAmbiguous = autoSelectionIsAmbiguous(best: best,
-                                                   second: second)
+        let isAmbiguous = autoSelectionIsAmbiguous(candidates: sortedCandidates)
 
         if isAmbiguous {
             return replacing(result: best,
@@ -311,11 +478,285 @@ enum WatchDSP {
                                        sampleRate: sampleRate,
                                        routeDescription: routeDescription,
                                        routeWarning: routeWarning,
-                                       audioStats: audioStats)
+                                       audioStats: audioStats,
+                                       candidateWeighting: nil)
+        let preliminary = analyze(prepared: prepared,
+                                  selectedBPH: selectedBPH,
+                                  checksCompetingBeatRates: false,
+                                  isAutoBPH: isAutoBPH)
+        guard checksCompetingBeatRates,
+              !isAutoBPH,
+              preliminary.quality != .low else {
+            return preliminary
+        }
+
+        let spectralEvidence = autoSpectralEvidence(samples: samples,
+                                                    sampleRate: sampleRate)
+        let autoResult = analyzeAuto(prepared: prepared,
+                                     spectralEvidence: spectralEvidence)
+        if autoResult.quality != .low {
+            guard autoResult.selectedBPH != selectedBPH else {
+                return preliminary
+            }
+            return replacing(result: preliminary,
+                             quality: .low,
+                             qualityScore: min(preliminary.qualityScore, 49),
+                             recognitionConfidence: min(preliminary.recognitionConfidence, 0.49),
+                             dominantFailureReason: .wrongBPHLikely)
+        }
+
         return analyze(prepared: prepared,
                        selectedBPH: selectedBPH,
-                       checksCompetingBeatRates: checksCompetingBeatRates,
-                       isAutoBPH: isAutoBPH)
+                       checksCompetingBeatRates: true,
+                       isAutoBPH: false)
+    }
+
+    static func makeCandidateTrace(
+        capture: AudioCapture,
+        result: WatchMeasurementResult
+    ) -> TickCandidateTrace {
+        let emptyTrace = TickCandidateTrace(schemaVersion: 1,
+                                            selectedBPH: result.selectedBPH,
+                                            isAutoBPH: result.isAutoBPH,
+                                            resultQuality: result.quality.rawValue,
+                                            sampleRate: capture.sampleRate,
+                                            sampleCount: capture.samples.count,
+                                            snippetFrameCount: 2_048,
+                                            snippetCenterOffset: 1_024,
+                                            labelingPolicy: "dsp-grid-v1-provisional-review-required",
+                                            eventSelectionPolicy: "5ms-nms-all-ticks-balanced-hard-negatives-v1",
+                                            sourceCandidateCount: 0,
+                                            mergedCandidateCount: 0,
+                                            events: [])
+        guard capture.sampleRate > 0,
+              capture.samples.count > Int(capture.sampleRate * 10) else {
+            return emptyTrace
+        }
+
+        let prepared = prepareAnalysis(samples: capture.samples,
+                                       sampleRate: capture.sampleRate,
+                                       routeDescription: capture.routeDescription,
+                                       routeWarning: capture.routeWarning,
+                                       audioStats: capture.levels)
+        let expectedPeriod = 3_600.0 / Double(result.selectedBPH)
+        let selectedPeaks = detectPeaks(context: prepared.peakDetectionContext,
+                                        sampleRate: capture.sampleRate,
+                                        expectedPeriod: expectedPeriod,
+                                        thresholdScale: Float(result.chosenThresholdScale))
+        let selectedFit = robustFit(peaks: selectedPeaks.peaks,
+                                    selectedBPH: result.selectedBPH,
+                                    captureDuration: capture.duration)
+        let assignedTimes = selectedFit?.assignedPeakTimes ?? []
+        let rawCandidates = prepared.peakDetectionContext.candidatesByThreshold
+            .min { $0.thresholdScale < $1.thresholdScale }?
+            .peaks ?? []
+        let candidateIndices = Set(rawCandidates.map(\.refinedIndex)).sorted()
+        let tickTolerance = max(0.003, expectedPeriod * 0.03)
+        let noiseTolerance = max(0.010, expectedPeriod * 0.08)
+        let canProposeLabels = result.quality != .low && !assignedTimes.isEmpty
+
+        let sourceEvents = candidateIndices.map { sampleIndex in
+            let time = Double(sampleIndex) / capture.sampleRate
+            let distance = nearestDistance(to: time, in: assignedTimes)
+            let label: TickCandidateProvisionalLabel
+            if !canProposeLabels {
+                label = .unknown
+            } else if let distance, distance <= tickTolerance {
+                label = .likelyTick
+            } else if let distance, distance >= noiseTolerance {
+                label = .likelyNoise
+            } else {
+                label = .unknown
+            }
+            let envelope = prepared.peakDetectionContext.envelope.indices.contains(sampleIndex)
+                ? Double(prepared.peakDetectionContext.envelope[sampleIndex])
+                : 0
+            return TickCandidateEvent(sampleIndex: sampleIndex,
+                                      timeSeconds: time,
+                                      normalizedEnvelope: envelope,
+                                      nearestAssignedDistanceSeconds: distance,
+                                      provisionalLabel: label)
+        }
+        let mergedEvents = mergeCandidateTraceEvents(sourceEvents,
+                                                     sampleRate: capture.sampleRate,
+                                                     sampleCount: capture.samples.count)
+        let selectedEvents = selectCandidateTraceEvents(
+            mergedEvents,
+            maximumCount: CandidateTraceConfiguration.maximumEventCount
+        )
+
+        return TickCandidateTrace(schemaVersion: emptyTrace.schemaVersion,
+                                  selectedBPH: emptyTrace.selectedBPH,
+                                  isAutoBPH: emptyTrace.isAutoBPH,
+                                  resultQuality: emptyTrace.resultQuality,
+                                  sampleRate: emptyTrace.sampleRate,
+                                  sampleCount: emptyTrace.sampleCount,
+                                  snippetFrameCount: emptyTrace.snippetFrameCount,
+                                  snippetCenterOffset: emptyTrace.snippetCenterOffset,
+                                  labelingPolicy: emptyTrace.labelingPolicy,
+                                  eventSelectionPolicy: emptyTrace.eventSelectionPolicy,
+                                  sourceCandidateCount: sourceEvents.count,
+                                  mergedCandidateCount: mergedEvents.count,
+                                  events: selectedEvents)
+    }
+
+    static func makeCandidatePool(capture: AudioCapture) -> TickCandidatePool {
+        guard capture.sampleRate > 0,
+              capture.samples.count > Int(capture.sampleRate * 10) else {
+            return TickCandidatePool(sourceCandidateCount: 0,
+                                     mergedCandidateCount: 0,
+                                     events: [])
+        }
+
+        let prepared = prepareAnalysis(samples: capture.samples,
+                                       sampleRate: capture.sampleRate,
+                                       routeDescription: capture.routeDescription,
+                                       routeWarning: capture.routeWarning,
+                                       audioStats: capture.levels)
+        let rawCandidates = prepared.peakDetectionContext.candidatesByThreshold
+            .min { $0.thresholdScale < $1.thresholdScale }?
+            .peaks ?? []
+        let candidateIndices = Set(rawCandidates.map(\.refinedIndex)).sorted()
+        let sourceEvents = candidateIndices.map { sampleIndex in
+            TickCandidateEvent(
+                sampleIndex: sampleIndex,
+                timeSeconds: Double(sampleIndex) / capture.sampleRate,
+                normalizedEnvelope: prepared.peakDetectionContext.envelope.indices.contains(sampleIndex)
+                    ? Double(prepared.peakDetectionContext.envelope[sampleIndex]) : 0,
+                nearestAssignedDistanceSeconds: nil,
+                provisionalLabel: .unknown
+            )
+        }
+        let mergedEvents = mergeCandidateTraceEvents(sourceEvents,
+                                                     sampleRate: capture.sampleRate,
+                                                     sampleCount: capture.samples.count)
+        return TickCandidatePool(sourceCandidateCount: sourceEvents.count,
+                                 mergedCandidateCount: mergedEvents.count,
+                                 events: mergedEvents)
+    }
+
+    private static func mergeCandidateTraceEvents(
+        _ events: [TickCandidateEvent],
+        sampleRate: Double,
+        sampleCount: Int
+    ) -> [TickCandidateEvent] {
+        guard events.count > 1, sampleRate > 0, sampleCount > 0 else {
+            return events.sorted { $0.sampleIndex < $1.sampleIndex }
+        }
+
+        let radius = max(1, Int((sampleRate * CandidateTraceConfiguration.duplicateMergeSeconds).rounded()))
+        let ranked = events.sorted { lhs, rhs in
+            let lhsPriority = candidateLabelPriority(lhs.provisionalLabel)
+            let rhsPriority = candidateLabelPriority(rhs.provisionalLabel)
+            if lhsPriority != rhsPriority { return lhsPriority > rhsPriority }
+            if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                return lhs.normalizedEnvelope > rhs.normalizedEnvelope
+            }
+            return lhs.sampleIndex < rhs.sampleIndex
+        }
+        var suppressed = Array(repeating: false, count: sampleCount)
+        var selected: [TickCandidateEvent] = []
+        selected.reserveCapacity(min(events.count, sampleCount / radius + 1))
+
+        for event in ranked where event.sampleIndex >= 0 && event.sampleIndex < sampleCount {
+            guard !suppressed[event.sampleIndex] else { continue }
+            selected.append(event)
+            let start = max(0, event.sampleIndex - radius)
+            let end = min(sampleCount - 1, event.sampleIndex + radius)
+            for index in start...end {
+                suppressed[index] = true
+            }
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    static func selectCandidateTraceEvents(
+        _ events: [TickCandidateEvent],
+        maximumCount: Int = 4_000
+    ) -> [TickCandidateEvent] {
+        guard maximumCount > 0 else { return [] }
+
+        let likelyTicks = events.filter { $0.provisionalLabel == .likelyTick }
+        let unknown = events.filter { $0.provisionalLabel == .unknown }
+        let likelyNoise = events.filter { $0.provisionalLabel == .likelyNoise }
+
+        if likelyTicks.isEmpty {
+            return diverseTraceSample(from: unknown + likelyNoise, limit: maximumCount)
+        }
+
+        var selected = diverseTraceSample(from: likelyTicks, limit: maximumCount)
+        let selectedTickCount = selected.count
+        var remaining = maximumCount - selected.count
+        guard remaining > 0 else { return selected }
+
+        let unknownTarget = max(CandidateTraceConfiguration.minimumUnknownCount,
+                                selected.count * CandidateTraceConfiguration.unknownsPerTick)
+        let selectedUnknown = diverseTraceSample(from: unknown,
+                                                 limit: min(remaining, unknownTarget))
+        selected.append(contentsOf: selectedUnknown)
+        remaining -= selectedUnknown.count
+
+        if remaining > 0 {
+            let noiseTarget = max(CandidateTraceConfiguration.minimumNoiseCount,
+                                  selectedTickCount * CandidateTraceConfiguration.noiseEventsPerTick)
+            selected.append(contentsOf: diverseTraceSample(from: likelyNoise,
+                                                            limit: min(remaining, noiseTarget)))
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    private static func diverseTraceSample(
+        from events: [TickCandidateEvent],
+        limit: Int
+    ) -> [TickCandidateEvent] {
+        guard limit > 0, events.count > limit else {
+            return limit > 0 ? events.sorted { $0.sampleIndex < $1.sampleIndex } : []
+        }
+
+        let ordered = events.sorted { $0.sampleIndex < $1.sampleIndex }
+        let coverageCount = max(1, limit / 2)
+        var selectedIndices = Set<Int>()
+        var selected: [TickCandidateEvent] = []
+        selected.reserveCapacity(limit)
+
+        for bucket in 0..<coverageCount {
+            let start = bucket * ordered.count / coverageCount
+            let end = max(start + 1, (bucket + 1) * ordered.count / coverageCount)
+            guard start < ordered.count else { continue }
+            let strongest = ordered[start..<min(end, ordered.count)].max { lhs, rhs in
+                if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                    return lhs.normalizedEnvelope < rhs.normalizedEnvelope
+                }
+                return lhs.sampleIndex > rhs.sampleIndex
+            }
+            if let strongest, selectedIndices.insert(strongest.sampleIndex).inserted {
+                selected.append(strongest)
+            }
+        }
+
+        if selected.count < limit {
+            let strongestRemaining = ordered
+                .filter { !selectedIndices.contains($0.sampleIndex) }
+                .sorted { lhs, rhs in
+                    if lhs.normalizedEnvelope != rhs.normalizedEnvelope {
+                        return lhs.normalizedEnvelope > rhs.normalizedEnvelope
+                    }
+                    return lhs.sampleIndex < rhs.sampleIndex
+                }
+            selected.append(contentsOf: strongestRemaining.prefix(limit - selected.count))
+        }
+
+        return selected.sorted { $0.sampleIndex < $1.sampleIndex }
+    }
+
+    private static func candidateLabelPriority(_ label: TickCandidateProvisionalLabel) -> Int {
+        switch label {
+        case .likelyTick: 2
+        case .unknown: 1
+        case .likelyNoise: 0
+        }
     }
 
     private static func prepareAnalysis(
@@ -323,13 +764,15 @@ enum WatchDSP {
         sampleRate: Double,
         routeDescription: String,
         routeWarning: String?,
-        audioStats: AudioLevelStats
+        audioStats: AudioLevelStats,
+        candidateWeighting: TickCandidateWeighting? = nil
     ) -> PreparedAnalysis {
         let processed = preprocess(samples, sampleRate: sampleRate)
         let envelope = normalizeEnvelope(makeEnvelope(processed, sampleRate: sampleRate),
                                           sampleRate: sampleRate)
         let peakDetectionContext = makePeakDetectionContext(envelope: envelope,
-                                                            sampleRate: sampleRate)
+                                                            sampleRate: sampleRate,
+                                                            candidateWeighting: candidateWeighting)
         return PreparedAnalysis(sampleRate: sampleRate,
                                 sampleCount: samples.count,
                                 routeDescription: routeDescription,
@@ -461,7 +904,10 @@ enum WatchDSP {
                                       clippingRatio: prepared.audioStats.clippingRatio,
                                       estimatedSnrDb: detection.stats.estimatedSnrDb,
                                       periodicityScore: selectedDetection.periodicityScore,
-                                      recognitionConfidence: competition.isLikelyWrongBeatRate ? min(recognitionConfidence, 0.49) : recognitionConfidence,
+                                      spectralPeriodicityScore: 0,
+                                      alternatingSpectralPeriodicityScore: 0,
+                                      alternatingSpectralConsensus: 0,
+                                      recognitionConfidence: finalQuality == .low ? min(recognitionConfidence, 0.49) : recognitionConfidence,
                                       tickRecallEstimate: tickRecallEstimate,
                                       analysisWindowCount: fit.analysisWindowCount,
                                       successfulWindowCount: fit.successfulWindowCount,
@@ -504,6 +950,9 @@ enum WatchDSP {
                                clippingRatio: audioStats.clippingRatio,
                                estimatedSnrDb: detectionStats.estimatedSnrDb,
                                periodicityScore: 0,
+                               spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: 0,
                                tickRecallEstimate: 0,
                                analysisWindowCount: 0,
@@ -563,6 +1012,234 @@ enum WatchDSP {
         return output
     }
 
+    static func autoSpectralPeriodicityScores(
+        samples: [Float],
+        sampleRate: Double
+    ) -> [Int: Double] {
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).periodicityScores
+    }
+
+    static func autoAlternatingSpectralConsensusScores(
+        samples: [Float],
+        sampleRate: Double
+    ) -> [Int: Double] {
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).alternatingConsensusScores
+    }
+
+    static func autoAlternatingSpectralPeriodicityScores(
+        samples: [Float],
+        sampleRate: Double
+    ) -> [Int: Double] {
+        autoSpectralEvidence(samples: samples,
+                             sampleRate: sampleRate).alternatingPeriodicityScores
+    }
+
+    private static func autoSpectralEvidence(
+        samples: [Float],
+        sampleRate: Double
+    ) -> AutoSpectralEvidence {
+        guard samples.count > Int(sampleRate * 10), sampleRate > 0 else {
+            return AutoSpectralEvidence(periodicityScores: [:],
+                                        alternatingPeriodicityScores: [:],
+                                        alternatingConsensusScores: [:])
+        }
+
+        let nyquist = sampleRate * 0.5
+        let highPass = min(DSPConfiguration.autoSpectralHighPassHz, nyquist * 0.50)
+        let lowPass = min(DSPConfiguration.autoSpectralLowPassHz, nyquist * 0.90)
+        guard highPass > 0, lowPass > highPass else {
+            return AutoSpectralEvidence(periodicityScores: [:],
+                                        alternatingPeriodicityScores: [:],
+                                        alternatingConsensusScores: [:])
+        }
+
+        let highPassRC = 1.0 / (2.0 * Double.pi * highPass)
+        let lowPassRC = 1.0 / (2.0 * Double.pi * lowPass)
+        let dt = 1.0 / sampleRate
+        let highPassAlpha = Float(highPassRC / (highPassRC + dt))
+        let lowPassAlpha = Float(dt / (lowPassRC + dt))
+
+        var previousInput = samples[0]
+        var firstHighPass: Float = 0
+        var previousFirstHighPass: Float = 0
+        var secondHighPass: Float = 0
+        var firstLowPass: Float = 0
+        var secondLowPass: Float = 0
+        var absolute = Array(repeating: Float.zero, count: samples.count)
+
+        for index in samples.indices {
+            let sample = samples[index]
+            firstHighPass = highPassAlpha * (firstHighPass + sample - previousInput)
+            previousInput = sample
+            secondHighPass = highPassAlpha * (secondHighPass + firstHighPass - previousFirstHighPass)
+            previousFirstHighPass = firstHighPass
+            firstLowPass += lowPassAlpha * (secondHighPass - firstLowPass)
+            secondLowPass += lowPassAlpha * (firstLowPass - secondLowPass)
+            absolute[index] = abs(secondLowPass)
+        }
+
+        let envelopeWindow = max(4, Int(sampleRate * 0.0015))
+        var envelope = Array(repeating: Float.zero, count: samples.count)
+        var runningSum: Float = 0
+        for index in absolute.indices {
+            runningSum += absolute[index]
+            if index >= envelopeWindow { runningSum -= absolute[index - envelopeWindow] }
+            envelope[index] = runningSum / Float(min(index + 1, envelopeWindow))
+        }
+        absolute.removeAll(keepingCapacity: false)
+
+        let longWindow = max(16, Int(sampleRate * 0.75))
+        var normalized = Array(repeating: Float.zero, count: envelope.count)
+        runningSum = 0
+        for index in envelope.indices {
+            runningSum += envelope[index]
+            if index >= longWindow { runningSum -= envelope[index - longWindow] }
+            let localMean = runningSum / Float(min(index + 1, longWindow))
+            normalized[index] = envelope[index] / max(localMean, 0.000_000_001)
+        }
+        envelope.removeAll(keepingCapacity: false)
+
+        let transientWindow = max(16, Int(sampleRate * 0.020))
+        var transients = Array(repeating: Float.zero, count: normalized.count)
+        runningSum = 0
+        for index in normalized.indices {
+            runningSum += normalized[index]
+            if index >= transientWindow { runningSum -= normalized[index - transientWindow] }
+            let localMean = runningSum / Float(min(index + 1, transientWindow))
+            transients[index] = max(normalized[index] - localMean, 0)
+        }
+        normalized.removeAll(keepingCapacity: false)
+
+        let correlationStride = max(1, Int((sampleRate / 6_000).rounded()))
+        let ignoredStart = min(transients.count, Int(sampleRate))
+        let singlePeriodScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+            let lag = Int((sampleRate * 3_600 / Double(beatRate.rawValue)).rounded())
+            let score = laggedCorrelation(transients,
+                                          lag: lag,
+                                          startIndex: ignoredStart,
+                                          stride: correlationStride)
+            return (beatRate.rawValue, score)
+        })
+        let alternatingPeriodScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+            let lag = Int((sampleRate * 7_200 / Double(beatRate.rawValue)).rounded())
+            let score = laggedCorrelation(transients,
+                                          lag: lag,
+                                          startIndex: ignoredStart,
+                                          stride: correlationStride)
+            return (beatRate.rawValue, score)
+        })
+        let windowFrameCount = max(
+            1,
+            Int((sampleRate * DSPConfiguration.autoAlternatingWindowDuration).rounded())
+        )
+        var windowCount = 0
+        var windowWins = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { ($0.rawValue, 0) })
+        var windowStart = 0
+        while windowStart + windowFrameCount <= transients.count {
+            let windowEnd = windowStart + windowFrameCount
+            let ranked = BeatRate.allCases.map { beatRate -> (bph: Int, score: Double) in
+                let lag = Int((sampleRate * 7_200 / Double(beatRate.rawValue)).rounded())
+                let score = laggedCorrelation(transients,
+                                              lag: lag,
+                                              startIndex: windowStart,
+                                              endIndex: windowEnd,
+                                              stride: correlationStride)
+                return (beatRate.rawValue, score)
+            }.sorted { $0.score > $1.score }
+
+            windowCount += 1
+            if let winner = ranked.first {
+                let runnerUpScore = ranked.dropFirst().first?.score ?? 0
+                if winner.score >= DSPConfiguration.autoAlternatingMinimumWindowPeriodicity,
+                   winner.score - runnerUpScore >= DSPConfiguration.autoAlternatingMinimumWindowMargin {
+                    windowWins[winner.bph, default: 0] += 1
+                }
+            }
+            windowStart += windowFrameCount
+        }
+
+        let consensusScores = Dictionary(uniqueKeysWithValues: BeatRate.allCases.map { beatRate in
+            let bph = beatRate.rawValue
+            let fullScore = alternatingPeriodScores[bph] ?? 0
+            let strongestWrongScore = alternatingPeriodScores
+                .filter { $0.key != bph }
+                .map(\.value)
+                .max() ?? 0
+            let wins = windowWins[bph, default: 0]
+            let hasConsensus = windowCount >= DSPConfiguration.autoAlternatingMinimumWindowCount
+                && wins == windowCount
+                && fullScore >= DSPConfiguration.autoAlternatingMinimumFullPeriodicity
+                && fullScore - strongestWrongScore >= DSPConfiguration.autoAlternatingMinimumFullMargin
+            return (bph, hasConsensus ? 1.0 : 0.0)
+        })
+
+        return AutoSpectralEvidence(periodicityScores: singlePeriodScores,
+                                    alternatingPeriodicityScores: alternatingPeriodScores,
+                                    alternatingConsensusScores: consensusScores)
+    }
+
+    private static func laggedCorrelation(
+        _ values: [Float],
+        lag: Int,
+        startIndex: Int,
+        endIndex: Int? = nil,
+        stride: Int
+    ) -> Double {
+        let end = min(endIndex ?? values.count, values.count)
+        guard lag > 0,
+              stride > 0,
+              startIndex >= 0,
+              startIndex + lag < end else {
+            return 0
+        }
+
+        var count = 0
+        var sumX = 0.0
+        var sumY = 0.0
+        var sumXX = 0.0
+        var sumYY = 0.0
+        var sumXY = 0.0
+        var index = startIndex
+        while index + lag < end {
+            let x = Double(values[index])
+            let y = Double(values[index + lag])
+            count += 1
+            sumX += x
+            sumY += y
+            sumXX += x * x
+            sumYY += y * y
+            sumXY += x * y
+            index += stride
+        }
+
+        guard count > 1 else { return 0 }
+        let countValue = Double(count)
+        let covariance = sumXY - sumX * sumY / countValue
+        let varianceX = sumXX - sumX * sumX / countValue
+        let varianceY = sumYY - sumY * sumY / countValue
+        let denominator = sqrt(max(varianceX * varianceY, 0))
+        guard denominator > 0 else { return 0 }
+        return max(-1, min(1, covariance / denominator))
+    }
+
+    private static func autoSpectralScoreBoost(periodicity: Double) -> Double {
+        let minimum = DSPConfiguration.autoSpectralMinimumUsefulPeriodicity
+        let fullStrength = DSPConfiguration.autoSpectralFullStrengthPeriodicity
+        guard fullStrength > minimum else { return 0 }
+        let normalized = max(0, min(1, (periodicity - minimum) / (fullStrength - minimum)))
+        return normalized * DSPConfiguration.autoSpectralMaximumScoreBoost
+    }
+
+    private static func autoAlternatingScoreBoost(
+        consensus: Double,
+        result: WatchMeasurementResult
+    ) -> Double {
+        guard result.quality != .low, consensus >= 1 else { return 0 }
+        return DSPConfiguration.autoSpectralMaximumScoreBoost
+    }
+
     private static func makeEnvelope(_ input: [Float], sampleRate: Double) -> [Float] {
         guard !input.isEmpty else { return [] }
 
@@ -610,6 +1287,7 @@ enum WatchDSP {
         let median: Float
         let p95: Float
         let candidatesByThreshold: [ThresholdPeakCandidates]
+        let candidateWeighting: TickCandidateWeighting?
     }
 
     private struct ThresholdPeakCandidates {
@@ -625,7 +1303,8 @@ enum WatchDSP {
 
     private static func makePeakDetectionContext(
         envelope: [Float],
-        sampleRate: Double
+        sampleRate: Double,
+        candidateWeighting: TickCandidateWeighting?
     ) -> PeakDetectionContext {
         let sortedSample = envelope.strideSample(maxCount: 20_000).sorted()
         let median = percentile(sortedSample, 0.50)
@@ -645,7 +1324,8 @@ enum WatchDSP {
         return PeakDetectionContext(envelope: envelope,
                                     median: median,
                                     p95: p95,
-                                    candidatesByThreshold: candidates)
+                                    candidatesByThreshold: candidates,
+                                    candidateWeighting: candidateWeighting)
     }
 
     private static func extractPeakCandidates(
@@ -812,13 +1492,18 @@ enum WatchDSP {
         }
 
         let minDistance = Int(sampleRate * expectedPeriod * 0.45)
-        var peaks: [Double] = []
-        var lastPeakIndex = -minDistance
-
-        for candidate in candidates.peaks
-        where candidate.triggerIndex - lastPeakIndex >= minDistance {
-            peaks.append(Double(candidate.refinedIndex) / sampleRate)
-            lastPeakIndex = candidate.refinedIndex
+        let peaks: [Double]
+        if let candidateWeighting = context.candidateWeighting,
+           !candidateWeighting.weights.isEmpty {
+            peaks = weightedPeakTimes(candidates: candidates.peaks,
+                                      envelope: envelope,
+                                      sampleRate: sampleRate,
+                                      minDistance: minDistance,
+                                      candidateWeighting: candidateWeighting)
+        } else {
+            peaks = chronologicalPeakTimes(candidates: candidates.peaks,
+                                           sampleRate: sampleRate,
+                                           minDistance: minDistance)
         }
 
         let stats = PeakDetectionStats(candidatePeakCount: peaks.count,
@@ -829,6 +1514,77 @@ enum WatchDSP {
                                        estimatedSnrDb: estimatedSnrDb(signal: context.p95,
                                                                       noise: context.median))
         return PeakDetectionResult(peaks: peaks, stats: stats)
+    }
+
+    private static func chronologicalPeakTimes(
+        candidates: [PeakCandidate],
+        sampleRate: Double,
+        minDistance: Int
+    ) -> [Double] {
+        var peaks: [Double] = []
+        var lastPeakIndex = -minDistance
+        for candidate in candidates
+        where candidate.triggerIndex - lastPeakIndex >= minDistance {
+            peaks.append(Double(candidate.refinedIndex) / sampleRate)
+            lastPeakIndex = candidate.refinedIndex
+        }
+        return peaks
+    }
+
+    private static func weightedPeakTimes(
+        candidates: [PeakCandidate],
+        envelope: [Float],
+        sampleRate: Double,
+        minDistance: Int,
+        candidateWeighting: TickCandidateWeighting
+    ) -> [Double] {
+        let lookupTolerance = max(1, Int((sampleRate * CandidateTraceConfiguration.duplicateMergeSeconds).rounded()))
+        let scored = candidates.map { candidate in
+            let score = candidateWeighting.score(near: candidate.refinedIndex,
+                                                  toleranceSamples: lookupTolerance) ?? 0
+            return (candidate: candidate, score: score)
+        }
+        let scoreRange = scored.reduce(into: (minimum: Double.infinity, maximum: -Double.infinity)) {
+            $0.minimum = min($0.minimum, $1.score)
+            $0.maximum = max($0.maximum, $1.score)
+        }
+        guard scoreRange.minimum.isFinite,
+              scoreRange.maximum.isFinite,
+              scoreRange.maximum - scoreRange.minimum > 0.000_001 else {
+            return chronologicalPeakTimes(candidates: candidates,
+                                          sampleRate: sampleRate,
+                                          minDistance: minDistance)
+        }
+
+        let ranked = scored.sorted { lhs, rhs in
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            let lhsEnvelope = envelope.indices.contains(lhs.candidate.refinedIndex)
+                ? envelope[lhs.candidate.refinedIndex] : 0
+            let rhsEnvelope = envelope.indices.contains(rhs.candidate.refinedIndex)
+                ? envelope[rhs.candidate.refinedIndex] : 0
+            if lhsEnvelope != rhsEnvelope { return lhsEnvelope > rhsEnvelope }
+            return lhs.candidate.triggerIndex < rhs.candidate.triggerIndex
+        }
+        var suppressed = Array(repeating: false, count: envelope.count)
+        var selected: [PeakCandidate] = []
+        selected.reserveCapacity(candidates.count)
+
+        for item in ranked {
+            let index = item.candidate.triggerIndex
+            guard suppressed.indices.contains(index), !suppressed[index] else { continue }
+            selected.append(item.candidate)
+            let start = max(0, index - minDistance + 1)
+            let end = min(suppressed.count - 1, index + minDistance - 1)
+            if start <= end {
+                for suppressedIndex in start...end {
+                    suppressed[suppressedIndex] = true
+                }
+            }
+        }
+
+        return selected.sorted { $0.refinedIndex < $1.refinedIndex }.map {
+            Double($0.refinedIndex) / sampleRate
+        }
     }
 
     private static func percentile(_ sortedValues: [Float], _ fraction: Double) -> Float {
@@ -1042,6 +1798,7 @@ enum WatchDSP {
         let windowRates: [Double]
         let analysisWindowCount: Int
         let successfulWindowCount: Int
+        let assignedPeakTimes: [Double]
     }
 
     private static func robustFit(peaks: [Double], selectedBPH: Int, captureDuration: Double) -> FitResult? {
@@ -1121,7 +1878,32 @@ enum WatchDSP {
                          outlierRatio: max(0, min(1, outlierRatio)),
                          windowRates: windowSummary.rates,
                          analysisWindowCount: windowSummary.analysisWindowCount,
-                         successfulWindowCount: windowSummary.successfulWindowCount)
+                         successfulWindowCount: windowSummary.successfulWindowCount,
+                         assignedPeakTimes: pairs.map(\.t).sorted())
+    }
+
+    private static func nearestDistance(to value: Double, in sortedValues: [Double]) -> Double? {
+        guard !sortedValues.isEmpty else { return nil }
+
+        var lower = 0
+        var upper = sortedValues.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if sortedValues[middle] < value {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+
+        var distance = Double.infinity
+        if lower < sortedValues.count {
+            distance = min(distance, abs(sortedValues[lower] - value))
+        }
+        if lower > 0 {
+            distance = min(distance, abs(sortedValues[lower - 1] - value))
+        }
+        return distance.isFinite ? distance : nil
     }
 
     private struct GridAssignment {
@@ -1390,44 +2172,85 @@ enum WatchDSP {
             || periodicityScore < DSPConfiguration.autoMinimumPeriodicity
     }
 
-    static func autoSelectionIsAmbiguous(
-        best: WatchMeasurementResult,
-        second: WatchMeasurementResult?
-    ) -> Bool {
-        let bestScore = autoBeatRateScore(best)
-        let secondScore = second.map(autoBeatRateScore) ?? 0
+    private static func autoSelectionIsAmbiguous(candidates: [AutoCandidate]) -> Bool {
+        guard let best = candidates.first else { return true }
+        let second = candidates.dropFirst().first
+        let bestResult = best.result
+        let bestScore = best.score
+        let secondScore = second?.score ?? 0
         guard autoSelectionIsAmbiguous(bestScore: bestScore,
                                        secondScore: secondScore,
-                                       verifiedQuality: best.quality,
-                                       outlierRatio: best.outlierRatio,
-                                       periodicityScore: best.periodicityScore) else {
+                                       verifiedQuality: bestResult.quality,
+                                       outlierRatio: bestResult.outlierRatio,
+                                       periodicityScore: bestResult.periodicityScore) else {
             return false
         }
 
-        guard let second,
-              best.quality != .low,
+        guard let secondResult = second?.result,
+              bestResult.quality != .low,
               bestScore >= DSPConfiguration.autoMinimumScore,
-              best.outlierRatio <= DSPConfiguration.autoMaximumOutlierRatio,
-              best.periodicityScore >= DSPConfiguration.autoMinimumPeriodicity else {
+              bestResult.outlierRatio <= DSPConfiguration.autoMaximumOutlierRatio,
+              bestResult.periodicityScore >= DSPConfiguration.autoMinimumPeriodicity else {
             return true
         }
 
-        let duration = best.sampleRate > 0
-            ? Double(best.sampleCount) / best.sampleRate
+        if independentSpectralEvidenceResolvesAmbiguity(best: best,
+                                                        candidates: candidates) {
+            return false
+        }
+
+        let duration = bestResult.sampleRate > 0
+            ? Double(bestResult.sampleCount) / bestResult.sampleRate
             : 0
-        let successfulWindowRatio = best.analysisWindowCount > 0
-            ? Double(best.successfulWindowCount) / Double(best.analysisWindowCount)
+        let successfulWindowRatio = bestResult.analysisWindowCount > 0
+            ? Double(bestResult.successfulWindowCount) / Double(bestResult.analysisWindowCount)
             : 0
         let hasLongCaptureConsensus = duration >= DSPConfiguration.autoLongCaptureMinimumDuration
-            && best.analysisWindowCount >= DSPConfiguration.autoLongCaptureMinimumWindowCount
+            && bestResult.analysisWindowCount >= DSPConfiguration.autoLongCaptureMinimumWindowCount
             && successfulWindowRatio >= DSPConfiguration.autoLongCaptureMinimumWindowRatio
             && bestScore - secondScore >= DSPConfiguration.autoLongCaptureMinimumScoreMargin
-            && best.beatCoverage - second.beatCoverage >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
-            && best.tickRecallEstimate - second.tickRecallEstimate >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
-            && best.periodicityScore - second.periodicityScore >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
-            && second.outlierRatio - best.outlierRatio >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && bestResult.beatCoverage - secondResult.beatCoverage >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && bestResult.tickRecallEstimate - secondResult.tickRecallEstimate >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && bestResult.periodicityScore - secondResult.periodicityScore >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
+            && secondResult.outlierRatio - bestResult.outlierRatio >= DSPConfiguration.autoLongCaptureMinimumEvidenceLead
 
         return !hasLongCaptureConsensus
+    }
+
+    private static func independentSpectralEvidenceResolvesAmbiguity(
+        best: AutoCandidate,
+        candidates: [AutoCandidate]
+    ) -> Bool {
+        guard let runnerUp = candidates.dropFirst().first else { return false }
+        let result = best.result
+        let otherResults = candidates.dropFirst().map(\.result)
+        let strongestOtherSingle = otherResults.map(\.spectralPeriodicityScore).max() ?? 0
+        let strongestOtherAlternating = otherResults.map(\.alternatingSpectralPeriodicityScore).max() ?? 0
+        let anyOtherAlternatingConsensus = otherResults.contains {
+            $0.alternatingSpectralConsensus >= 1
+        }
+        let singlePeriodEvidence = result.spectralPeriodicityScore
+            >= DSPConfiguration.autoIndependentMinimumSinglePeriodicity
+            && result.spectralPeriodicityScore - strongestOtherSingle
+            >= DSPConfiguration.autoIndependentMinimumSingleLead
+        let alternatingPeriodEvidence = result.alternatingSpectralConsensus >= 1
+            && !anyOtherAlternatingConsensus
+            && result.alternatingSpectralPeriodicityScore
+            >= DSPConfiguration.autoAlternatingMinimumFullPeriodicity
+            && result.alternatingSpectralPeriodicityScore - strongestOtherAlternating
+            >= DSPConfiguration.autoAlternatingMinimumFullMargin
+        let successfulWindowRatio = result.analysisWindowCount > 0
+            ? Double(result.successfulWindowCount) / Double(result.analysisWindowCount)
+            : 0
+
+        return best.score - runnerUp.score >= DSPConfiguration.autoIndependentMinimumScoreMargin
+            && result.quality != .low
+            && result.beatCoverage >= DSPConfiguration.autoIndependentMinimumCoverage
+            && result.tickRecallEstimate >= DSPConfiguration.autoIndependentMinimumRecall
+            && result.periodicityScore >= DSPConfiguration.autoMinimumPeriodicity
+            && result.outlierRatio <= DSPConfiguration.autoMaximumOutlierRatio
+            && successfulWindowRatio >= DSPConfiguration.minimumSuccessfulWindowRatio
+            && (singlePeriodEvidence || alternatingPeriodEvidence)
     }
 
     private static func recognitionConfidence(
@@ -1486,6 +2309,9 @@ enum WatchDSP {
         quality: SignalQuality? = nil,
         qualityScore: Double? = nil,
         recognitionConfidence: Double? = nil,
+        spectralPeriodicityScore: Double? = nil,
+        alternatingSpectralPeriodicityScore: Double? = nil,
+        alternatingSpectralConsensus: Double? = nil,
         dominantFailureReason: RecognitionIssue? = nil,
         isAutoBPH: Bool? = nil
     ) -> WatchMeasurementResult {
@@ -1506,6 +2332,9 @@ enum WatchDSP {
                                clippingRatio: result.clippingRatio,
                                estimatedSnrDb: result.estimatedSnrDb,
                                periodicityScore: result.periodicityScore,
+                               spectralPeriodicityScore: spectralPeriodicityScore ?? result.spectralPeriodicityScore,
+                               alternatingSpectralPeriodicityScore: alternatingSpectralPeriodicityScore ?? result.alternatingSpectralPeriodicityScore,
+                               alternatingSpectralConsensus: alternatingSpectralConsensus ?? result.alternatingSpectralConsensus,
                                recognitionConfidence: recognitionConfidence ?? result.recognitionConfidence,
                                tickRecallEstimate: result.tickRecallEstimate,
                                analysisWindowCount: result.analysisWindowCount,

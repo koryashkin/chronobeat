@@ -93,6 +93,7 @@ struct ContentView: View {
             ResultView(result: result,
                        exportURL: viewModel.latestExportURL,
                        exportStatusText: viewModel.exportStatusText,
+                       isExporting: viewModel.isExporting,
                        onExport: {
                 viewModel.exportLastMeasurement()
             }, onRetry: {
@@ -153,6 +154,7 @@ struct ResultView: View {
     let result: WatchMeasurementResult
     let exportURL: URL?
     let exportStatusText: String?
+    let isExporting: Bool
     let onExport: () -> Void
     let onRetry: () -> Void
 
@@ -182,6 +184,9 @@ struct ResultView: View {
                 Text("Beat coverage: \(String(format: "%.1f", result.beatCoverage * 100))%")
                 Text("Outlier ratio: \(String(format: "%.1f", result.outlierRatio * 100))%")
                 Text("Periodicity: \(String(format: "%.2f", result.periodicityScore))")
+                Text("High-band periodicity: \(String(format: "%.2f", result.spectralPeriodicityScore))")
+                Text("Two-beat periodicity: \(String(format: "%.2f", result.alternatingSpectralPeriodicityScore))")
+                Text("Alternating tick/tock consensus: \(result.alternatingSpectralConsensus >= 1 ? "Yes" : "No")")
                 Text("Recognition confidence: \(String(format: "%.1f", result.recognitionConfidence * 100))%")
                 Text("Tick recall estimate: \(String(format: "%.1f", result.tickRecallEstimate * 100))%")
                 Text("Windows: \(result.successfulWindowCount) / \(result.analysisWindowCount)")
@@ -217,15 +222,18 @@ struct ResultView: View {
 
             Button("Measure again", action: onRetry)
                 .buttonStyle(.borderedProminent)
+                .disabled(isExporting)
                 .accessibilityIdentifier("measureAgainButton")
 
             VStack(spacing: 8) {
                 Button {
                     onExport()
                 } label: {
-                    Label("Export debug capture", systemImage: "square.and.arrow.up")
+                    Label(isExporting ? "Preparing debug export" : "Export debug capture",
+                          systemImage: "square.and.arrow.up")
                 }
                 .buttonStyle(.bordered)
+                .disabled(isExporting)
                 .accessibilityIdentifier("exportDebugCaptureButton")
 
                 if let exportStatusText {

@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+BUILD_DIR="${TMPDIR:-/tmp}/chronobeat-recognition-benchmark"
+EXECUTABLE="$BUILD_DIR/run-recognition-benchmark"
+
+mkdir -p "$BUILD_DIR"
+xcrun swiftc -O \
+  "$REPO_ROOT/Sources/WatchAccuracyMeter/AudioCapture.swift" \
+  "$REPO_ROOT/Sources/WatchAccuracyMeter/WatchDSP.swift" \
+  "$SCRIPT_DIR/main.swift" \
+  -o "$EXECUTABLE"
+
+exec "$EXECUTABLE" "$@"

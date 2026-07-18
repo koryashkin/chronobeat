@@ -16,7 +16,8 @@ The app is intentionally local and focused: no backend, login, cloud sync, watch
 - High, Medium, or Low signal-quality result
 - Early retry guidance for quiet input or route changes
 - Live indication that microphone samples are being received
-- Optional local debug export containing `capture.wav` and `diagnostics.json`
+- Optional local debug export containing raw audio, diagnostics, and provisional
+  tick-candidate metadata
 
 Supported beat rates:
 
@@ -40,6 +41,7 @@ Built-in iPhone microphone
 -> tick candidate detection
 -> duplicate/resonance suppression
 -> beat-grid assignment and robust regression
+-> one-beat and alternating tick/tock spectral evidence
 -> competing-BPH and harmonic checks
 -> seconds/day estimate with confidence gating
 ```
@@ -111,7 +113,21 @@ Sanitized real-device fixtures are stored in `Tests/WatchAccuracyMeterTests/Fixt
 - iPhone bottom-microphone capture at 28,800 bph
 - Tudor GMT at 28,800 bph
 
-These fixtures protect known recognition behavior, but they do not prove 90% real-world accuracy. The benchmark gate is intended to require at least 30 labeled real-audio windows before making that claim. Exact `sec/day` is not asserted for real fixtures without a trusted reference timegrapher measurement.
+These fixtures protect known recognition behavior, but they do not prove 90%
+real-world accuracy. The benchmark gate is eligible only with at least 100
+labeled windows from 20 unique captures, five watches, and two devices. Exact
+`sec/day` is not asserted for real fixtures without a trusted reference
+timegrapher measurement.
+
+Replay private full captures without adding them to git:
+
+```sh
+Tools/RecognitionBenchmark/run-recognition-benchmark /path/to/manifest.json > /tmp/recognition-report.json
+```
+
+See `Tools/RecognitionBenchmark/README.md` for the private manifest format. The
+JSON report includes every window outcome and explicitly distinguishes an
+unpopulated gate from a passing result.
 
 Simulator tests validate compilation, UI wiring, DSP behavior, and fixture regressions. Microphone routing and recognition quality must still be tested on a physical iPhone.
 
@@ -121,6 +137,8 @@ After a measurement, the debug export creates a local folder containing:
 
 - `capture.wav`: raw mono captured samples;
 - `diagnostics.json`: selected/detected BPH, rate, quality, coverage, periodicity, threshold, RMS, peak, clipping, SNR, route, sample rate, and window results.
+- `candidates.json`: bounded provisional tick/noise events for offline review and
+  future Core ML candidate-verifier training.
 
 Exports are created only after an explicit user action and can be shared for regression debugging. Do not commit private full recordings. Only small, sanitized, approved WAV trims belong under the fixture directory.
 
@@ -131,20 +149,60 @@ Sources/WatchAccuracyMeter/
   AudioCapture.swift
   AudioCaptureExporter.swift
   AudioWatchMeter.swift
+  CandidateReview.swift
   ContentView.swift
   MeasurementViewModel.swift
+  TickCandidateFeatures.swift
   WatchAccuracyMeterApp.swift
   WatchDSP.swift
 Tests/WatchAccuracyMeterTests/
+  CandidateReviewTests.swift
   Fixtures/
+  TickCandidateFeatureTests.swift
   WatchDSPTests.swift
 Docs/
   MVP_Technical_Document.md
+  ON_DEVICE_ML_RESEARCH.md
   ROADMAP.md
   VALIDATION_PLAN.md
+Tools/RecognitionBenchmark/
+Tools/CandidateReview/
+Tools/TickCandidateMLExperiment/
 project.yml
 WatchAccuracyMeter.xcodeproj/
 ```
+
+## Experimental on-device ML
+
+An offline Create ML experiment evaluates whether transient-shape features can
+separate provisional ticks from noise while holding out complete watches. It
+also compares full DSP-only and model-assisted Auto-BPH outcomes. It can produce
+a small Core ML model for technical validation, but generated models remain
+ignored and are not used by the app.
+
+```sh
+Tools/TickCandidateMLExperiment/run-tick-candidate-ml-experiment \
+  /path/to/manifest.json \
+  --model-type logistic \
+  --model-output /tmp/tick-candidate.mlmodel \
+  > /tmp/tick-candidate-report.json
+```
+
+See `Tools/TickCandidateMLExperiment/README.md` and
+`Docs/ON_DEVICE_ML_RESEARCH.md` for the current evidence and shipping gates.
+
+Manually review a balanced candidate sample without uploading audio:
+
+```sh
+Tools/CandidateReview/run-candidate-review \
+  /path/to/capture.wav \
+  28800 \
+  /tmp/watch-review
+```
+
+Open `/tmp/watch-review/review.html`, classify candidates, and export the label
+JSON. The private review package embeds the source audio and must not be added
+to git. See `Tools/CandidateReview/README.md` for the complete workflow.
 
 ## Product Limits
 

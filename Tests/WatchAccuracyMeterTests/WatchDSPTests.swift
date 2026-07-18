@@ -143,19 +143,114 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertLessThan(result.qualityScore, 50)
     }
 
-    func testAutoBPHDetectsSyntheticBeatRate() {
-        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
-                                                nominalBPH: BeatRate.bph21600.rawValue,
-                                                duration: 20)
+    func testAutoBPHDetectsEverySupportedSyntheticBeatRate() {
+        for beatRate in BeatRate.allCases {
+            let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4,
+                                                    nominalBPH: beatRate.rawValue,
+                                                    duration: 12)
 
-        let result = WatchDSP.analyzeAuto(samples: samples,
-                                          sampleRate: sampleRate,
-                                          routeDescription: "Auto synthetic")
+            let result = WatchDSP.analyzeAuto(samples: samples,
+                                              sampleRate: sampleRate,
+                                              routeDescription: "Auto synthetic \(beatRate.rawValue)")
 
-        XCTAssertEqual(result.selectedBPH, BeatRate.bph21600.rawValue)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
+            XCTAssertEqual(result.selectedBPH,
+                           beatRate.rawValue,
+                           "Wrong Auto BPH for synthetic \(beatRate.rawValue)")
+            XCTAssertTrue(result.isAutoBPH)
+            XCTAssertNotEqual(result.quality,
+                              .low,
+                              "Expected usable quality for synthetic \(beatRate.rawValue)")
+            XCTAssertEqual(result.rateSecondsPerDay, 4, accuracy: 3)
+        }
+    }
+
+    func testCandidateWeightingClampsDeduplicatesAndFindsNearestScore() {
+        let weighting = TickCandidateWeighting(weights: [
+            TickCandidateWeight(sampleIndex: 120, score: -0.4),
+            TickCandidateWeight(sampleIndex: 120, score: 0.8),
+            TickCandidateWeight(sampleIndex: 300, score: 1.4),
+            TickCandidateWeight(sampleIndex: -1, score: 0.5),
+            TickCandidateWeight(sampleIndex: 500, score: .nan)
+        ])
+
+        XCTAssertEqual(weighting.weights, [
+            TickCandidateWeight(sampleIndex: 120, score: 0.8),
+            TickCandidateWeight(sampleIndex: 300, score: 1)
+        ])
+        XCTAssertEqual(weighting.score(near: 124, toleranceSamples: 4), 0.8)
+        XCTAssertEqual(weighting.score(near: 290, toleranceSamples: 10), 1)
+        XCTAssertNil(weighting.score(near: 290, toleranceSamples: 9))
+    }
+
+    func testEqualCandidateWeightsPreserveProductionAutoResult() {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 4, duration: 12)
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Equal-weight synthetic")
+        let pool = WatchDSP.makeCandidatePool(capture: capture)
+        let weighting = TickCandidateWeighting(weights: pool.events.map {
+            TickCandidateWeight(sampleIndex: $0.sampleIndex, score: 0.5)
+        })
+
+        let production = WatchDSP.analyzeAuto(capture: capture)
+        let experimental = WatchDSP.analyzeAuto(capture: capture,
+                                                candidateWeighting: weighting)
+
+        XCTAssertFalse(pool.events.isEmpty)
+        XCTAssertEqual(experimental.selectedBPH, production.selectedBPH)
+        XCTAssertEqual(experimental.quality, production.quality)
+        XCTAssertEqual(experimental.detectedPeakCount, production.detectedPeakCount)
+        XCTAssertEqual(experimental.validPeakCount, production.validPeakCount)
+        XCTAssertEqual(experimental.rateSecondsPerDay, production.rateSecondsPerDay, accuracy: 0.000_001)
+    }
+
+    func testCandidateWeightingPrefersPeriodicTicksOverNearbyJitteredDecoys() {
+        let duration = 20.0
+        var samples = Array(repeating: Float.zero, count: Int(duration * sampleRate))
+        let period = 3_600.0 / Double(selectedBPH)
+        let jitterPattern = [0.010, 0.050, 0.018, 0.045, 0.025, 0.040]
+        var trueTickIndices: [Int] = []
+        var beatIndex = 0
+        var tickTime = 0.1
+        while tickTime < duration - 0.1 {
+            let tickIndex = Int((tickTime * sampleRate).rounded())
+            let jitter = jitterPattern[beatIndex % jitterPattern.count]
+            let decoyIndex = tickIndex - Int((jitter * sampleRate).rounded())
+            addSyntheticTick(to: &samples,
+                             at: decoyIndex,
+                             beatIndex: beatIndex,
+                             amplitudeScale: 1)
+            addSyntheticTick(to: &samples,
+                             at: tickIndex,
+                             beatIndex: beatIndex,
+                             amplitudeScale: 0.65)
+            trueTickIndices.append(tickIndex)
+            beatIndex += 1
+            tickTime += period
+        }
+
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Weighted collision synthetic")
+        let pool = WatchDSP.makeCandidatePool(capture: capture)
+        let trueTolerance = Int((sampleRate * 0.004).rounded())
+        let weighting = TickCandidateWeighting(weights: pool.events.map { event in
+            let isTrueTick = trueTickIndices.contains {
+                abs($0 - event.sampleIndex) <= trueTolerance
+            }
+            return TickCandidateWeight(sampleIndex: event.sampleIndex,
+                                       score: isTrueTick ? 1 : 0)
+        })
+
+        let production = WatchDSP.analyzeAuto(capture: capture)
+        let experimental = WatchDSP.analyzeAuto(capture: capture,
+                                                candidateWeighting: weighting)
+
+        XCTAssertEqual(experimental.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(experimental.quality, .low)
+        XCTAssertGreaterThan(experimental.periodicityScore, production.periodicityScore + 0.02)
+        XCTAssertGreaterThan(experimental.qualityScore, production.qualityScore + 5)
+        XCTAssertLessThan(abs(experimental.rateSecondsPerDay), abs(production.rateSecondsPerDay))
     }
 
     func testAutoBPHPreservesTooQuietFailureReason() {
@@ -230,44 +325,187 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
     }
 
-    func testRealDeviceBottomMicFixtureAutoDetectsBeatRate() throws {
-        let fixture = try loadFixture(named: "iphone-bottom-28800-0-20s")
+    func testAutoBPHFixtureManifestOutcomes() throws {
+        let manifest = try loadRecognitionFixtureManifest()
+        XCTAssertEqual(manifest.schemaVersion, 1)
+        XCTAssertFalse(manifest.fixtures.isEmpty)
 
-        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
-                                          sampleRate: fixture.sampleRate,
-                                          routeDescription: "iPhone bottom mic fixture")
+        for spec in manifest.fixtures {
+            XCTAssertFalse(spec.sourceCaptureID.isEmpty)
+            let fixture = try loadFixture(named: spec.resourceName)
+            XCTAssertEqual(Double(fixture.samples.count) / fixture.sampleRate,
+                           spec.durationSeconds,
+                           accuracy: 0.01,
+                           "Unexpected fixture duration for \(spec.resourceName)")
 
-        XCTAssertEqual(result.selectedBPH, selectedBPH)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.85)
+            let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                              sampleRate: fixture.sampleRate,
+                                              routeDescription: spec.resourceName)
+
+            switch spec.expectedAutoOutcome {
+            case .recognize:
+                XCTAssertEqual(result.selectedBPH,
+                               spec.knownBPH,
+                               "Wrong Auto BPH for \(spec.resourceName)")
+                XCTAssertNotEqual(result.quality,
+                                  .low,
+                                  "Expected a usable Auto result for \(spec.resourceName)")
+                XCTAssertNotEqual(result.dominantFailureReason,
+                                  .ambiguousBeatRate,
+                                  "Unexpected Auto ambiguity for \(spec.resourceName)")
+            case .reject:
+                XCTAssertEqual(result.quality,
+                               .low,
+                               "A fixture without independent periodic evidence must stay low quality")
+            }
+        }
     }
 
-    func testTudorGMTFixtureAutoDetectsNoisyBeatRate() throws {
+    func testHighFrequencyPeriodicityIdentifiesTudorBeatRate() throws {
         let fixture = try loadFixture(named: "tudor-gmt-28800-40-60s")
 
-        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
-                                          sampleRate: fixture.sampleRate,
-                                          routeDescription: "Tudor GMT fixture")
+        let scores = WatchDSP.autoSpectralPeriodicityScores(samples: fixture.samples,
+                                                            sampleRate: fixture.sampleRate)
+        let selectedScore = try XCTUnwrap(scores[selectedBPH])
+        let strongestWrongScore = try XCTUnwrap(scores
+            .filter { $0.key != selectedBPH }
+            .map(\.value)
+            .max())
 
-        XCTAssertEqual(result.selectedBPH, selectedBPH)
-        XCTAssertTrue(result.isAutoBPH)
-        XCTAssertNotEqual(result.quality, .low)
-        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.78)
-        XCTAssertGreaterThanOrEqual(result.periodicityScore, 0.55)
-        XCTAssertNotEqual(result.dominantFailureReason, .ambiguousBeatRate)
+        XCTAssertGreaterThan(selectedScore, 0.50)
+        XCTAssertGreaterThan(selectedScore - strongestWrongScore, 0.50)
     }
 
-    func testDifficultTudorTrimRemainsAmbiguousWithoutLongCaptureConsensus() throws {
-        let fixture = try loadFixture(named: "tudor-gmt-28800-30-60s")
+    func testKingSeikoFixtureDoesNotInventSpectralPeriodicity() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let scores = WatchDSP.autoSpectralPeriodicityScores(samples: fixture.samples,
+                                                            sampleRate: fixture.sampleRate)
+        let strongestScore = try XCTUnwrap(scores.values.max())
+
+        XCTAssertLessThan(strongestScore, 0.05)
+    }
+
+    func testAlternatingSpectralConsensusIdentifiesKingSeikoBeatRate() throws {
+        let fixture = try loadFixture(named: "king-seiko-28800-10-30s")
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: fixture.samples,
+            sampleRate: fixture.sampleRate
+        )
+        let alternatingPeriodicity = WatchDSP.autoAlternatingSpectralPeriodicityScores(
+            samples: fixture.samples,
+            sampleRate: fixture.sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "King Seiko alternating consensus")
+
+        let selectedAlternatingScore = try XCTUnwrap(alternatingPeriodicity[selectedBPH])
+        let strongestWrongScore = try XCTUnwrap(alternatingPeriodicity
+            .filter { $0.key != selectedBPH }
+            .map(\.value)
+            .max())
+        XCTAssertGreaterThanOrEqual(selectedAlternatingScore, 0.03)
+        XCTAssertGreaterThanOrEqual(selectedAlternatingScore - strongestWrongScore, 0.025)
+        XCTAssertEqual(consensus[selectedBPH], 1)
+        XCTAssertTrue(consensus
+            .filter { $0.key != selectedBPH }
+            .allSatisfy { $0.value == 0 })
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertEqual(result.alternatingSpectralPeriodicityScore,
+                       selectedAlternatingScore,
+                       accuracy: 0.000_001)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 1)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
+    func testRandomHighFrequencyImpulsesDoNotCreateAlternatingConsensus() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 20))
+        addWhiteNoise(to: &samples, amplitude: 0.0005, seed: 0xA17E)
+        addImpulseNoise(to: &samples, count: 600, amplitude: 0.08, seed: 0xB17E)
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: samples,
+            sampleRate: sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Random high-frequency impulses")
+
+        XCTAssertTrue(consensus.values.allSatisfy { $0 == 0 })
+        XCTAssertEqual(result.quality, .low)
+    }
+
+    func testAlternatingSpectralConsensusCannotPromoteModulatedNoiseGrid() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 20))
+        for index in samples.indices {
+            let time = Double(index) / sampleRate
+            let modulation = max(0, sin(2 * Double.pi * 4 * time))
+            samples[index] = Float(sin(2 * Double.pi * 12_000 * time) * modulation * 0.02)
+        }
+        addWhiteNoise(to: &samples, amplitude: 0.0005, seed: 0x4)
+
+        let consensus = WatchDSP.autoAlternatingSpectralConsensusScores(
+            samples: samples,
+            sampleRate: sampleRate
+        )
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Amplitude-modulated noise")
+
+        XCTAssertEqual(consensus[selectedBPH], 1)
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
+    }
+
+    func testIndependentSinglePeriodEvidenceResolvesTudorAmbiguity() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-20s")
 
         let result = WatchDSP.analyzeAuto(samples: fixture.samples,
                                           sampleRate: fixture.sampleRate,
-                                          routeDescription: "Difficult Tudor GMT fixture")
+                                          routeDescription: "Tudor independent spectral evidence")
 
         XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.80)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.80)
+        XCTAssertGreaterThanOrEqual(result.spectralPeriodicityScore, 0.20)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 0)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
+    func testIndependentAlternatingEvidenceResolvesTudorRunnerUpGrid() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-30s")
+        let start = Int((10 * fixture.sampleRate).rounded())
+        let frameCount = Int((20 * fixture.sampleRate).rounded())
+        let samples = Array(fixture.samples[start..<(start + frameCount)])
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: fixture.sampleRate,
+                                          routeDescription: "Tudor alternating runner-up")
+
+        XCTAssertEqual(result.selectedBPH, selectedBPH)
+        XCTAssertNotEqual(result.quality, .low)
+        XCTAssertGreaterThanOrEqual(result.beatCoverage, 0.80)
+        XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.80)
+        XCTAssertGreaterThanOrEqual(result.spectralPeriodicityScore, 0.20)
+        XCTAssertEqual(result.alternatingSpectralConsensus, 1)
+        XCTAssertNil(result.dominantFailureReason)
+    }
+
+    func testStationaryHighFrequencyNoiseDoesNotCreateAutoBeatRate() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
+        addSine(to: &samples, frequency: 12_000, amplitude: 0.02)
+        addWhiteNoise(to: &samples, amplitude: 0.001, seed: 0x12_000)
+
+        let result = WatchDSP.analyzeAuto(samples: samples,
+                                          sampleRate: sampleRate,
+                                          routeDescription: "Stationary high-frequency noise")
+
         XCTAssertEqual(result.quality, .low)
-        XCTAssertEqual(result.dominantFailureReason, .ambiguousBeatRate)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
     }
 
     func testTudorFullDeviceCaptureAutoDetectsBeatRateEndToEnd() throws {
@@ -285,6 +523,57 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(result.tickRecallEstimate, 0.85)
         XCTAssertGreaterThanOrEqual(result.successfulWindowCount,
                                     Int(ceil(Double(result.analysisWindowCount) * 0.90)))
+
+        let windows = fixtureWindows(samples: fixture.samples,
+                                     sampleRate: fixture.sampleRate,
+                                     duration: 20,
+                                     hop: 20)
+        XCTAssertEqual(windows.count, 3)
+        for window in windows {
+            let windowResult = WatchDSP.analyzeAuto(samples: window.samples,
+                                                    sampleRate: fixture.sampleRate,
+                                                    routeDescription: "Tudor GMT \(window.start)-second window")
+            XCTAssertEqual(windowResult.selectedBPH,
+                           selectedBPH,
+                           "Wrong Auto BPH at \(window.start) seconds")
+            XCTAssertNotEqual(windowResult.quality,
+                              .low,
+                              "Expected usable Auto result at \(window.start) seconds")
+        }
+    }
+
+    func testTudorFullDeviceCaptureRejectsManualWrongBPHWithinThirtySeconds() throws {
+        let fixture = try loadFullTudorDeviceCapture()
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let result = WatchDSP.analyze(samples: fixture.samples,
+                                      sampleRate: fixture.sampleRate,
+                                      selectedBPH: BeatRate.bph21600.rawValue,
+                                      routeDescription: "Tudor GMT wrong manual BPH")
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+
+        XCTAssertLessThan(elapsed, 30, "Manual BPH verification exceeded the 30-second requirement.")
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertEqual(result.dominantFailureReason, .wrongBPHLikely)
+        XCTAssertLessThan(result.qualityScore, 50)
+        XCTAssertLessThan(result.recognitionConfidence, 0.50)
+    }
+
+    func testTudorFixtureRejectsEverySupportedManualWrongBPH() throws {
+        let fixture = try loadFixture(named: "tudor-gmt-28800-0-20s")
+        let wrongBeatRates = BeatRate.allCases.map(\.rawValue).filter { $0 != selectedBPH }
+
+        for beatRate in wrongBeatRates {
+            let result = WatchDSP.analyze(samples: fixture.samples,
+                                          sampleRate: fixture.sampleRate,
+                                          selectedBPH: beatRate,
+                                          routeDescription: "Tudor GMT wrong \(beatRate) BPH")
+
+            XCTAssertEqual(result.quality, .low, "Expected \(beatRate) BPH to be rejected.")
+            XCTAssertNotNil(result.dominantFailureReason)
+            XCTAssertLessThan(result.qualityScore, 50)
+            XCTAssertLessThan(result.recognitionConfidence, 0.50)
+        }
     }
 
     func testFullDurationNoisyFixtureAutoAnalysisCompletesWithinThirtySeconds() throws {
@@ -369,7 +658,7 @@ final class WatchDSPTests: XCTestCase {
         }
     }
 
-    func testDebugCaptureExportWritesWAVAndDiagnosticsJSON() throws {
+    func testDebugCaptureExportWritesAudioDiagnosticsAndCandidateTrace() throws {
         let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 5, duration: 12)
         let capture = AudioCapture(samples: samples,
                                    sampleRate: sampleRate,
@@ -386,6 +675,7 @@ final class WatchDSPTests: XCTestCase {
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.audioURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: export.diagnosticsURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: export.candidateTraceURL.path))
 
         let exportedAudio = try AVAudioFile(forReading: export.audioURL)
         XCTAssertEqual(Int(exportedAudio.length), samples.count)
@@ -397,8 +687,77 @@ final class WatchDSPTests: XCTestCase {
         XCTAssertEqual(json?["isAutoBPH"] as? Bool, false)
         XCTAssertEqual(json?["routeDescription"] as? String, "Synthetic microphone")
         XCTAssertNotNil(json?["recognitionConfidence"])
+        XCTAssertNotNil(json?["spectralPeriodicityScore"])
+        XCTAssertNotNil(json?["alternatingSpectralPeriodicityScore"])
+        XCTAssertNotNil(json?["alternatingSpectralConsensus"])
+
+        let traceData = try Data(contentsOf: export.candidateTraceURL)
+        let trace = try JSONDecoder().decode(TickCandidateTrace.self, from: traceData)
+        XCTAssertEqual(trace.schemaVersion, 1)
+        XCTAssertEqual(trace.selectedBPH, selectedBPH)
+        XCTAssertEqual(trace.sampleRate, sampleRate)
+        XCTAssertEqual(trace.sampleCount, samples.count)
+        XCTAssertEqual(trace.snippetFrameCount, 2_048)
+        XCTAssertEqual(trace.snippetCenterOffset, 1_024)
+        XCTAssertFalse(trace.events.isEmpty)
+        XCTAssertGreaterThanOrEqual(trace.sourceCandidateCount, trace.mergedCandidateCount)
+        XCTAssertGreaterThanOrEqual(trace.mergedCandidateCount, trace.events.count)
+        XCTAssertLessThanOrEqual(trace.events.count, 4_000)
+        XCTAssertTrue(trace.events.contains { $0.provisionalLabel == .likelyTick })
+        XCTAssertTrue(trace.events.allSatisfy { samples.indices.contains($0.sampleIndex) })
 
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testLowQualityCandidateTraceLeavesAllLabelsUnknown() {
+        var samples = Array(repeating: Float.zero, count: Int(sampleRate * 12))
+        addImpulseNoise(to: &samples, count: 180, amplitude: 0.18, seed: 0xBAD)
+        let capture = AudioCapture(samples: samples,
+                                   sampleRate: sampleRate,
+                                   routeDescription: "Random impulse noise")
+        let result = WatchDSP.analyzeAuto(capture: capture)
+
+        let trace = WatchDSP.makeCandidateTrace(capture: capture, result: result)
+
+        XCTAssertEqual(result.quality, .low)
+        XCTAssertFalse(trace.events.isEmpty)
+        XCTAssertTrue(trace.events.allSatisfy { $0.provisionalLabel == .unknown })
+    }
+
+    func testCandidateTraceSelectionKeepsTicksAndBalancesBoundedNegatives() {
+        func events(count: Int, start: Int, label: TickCandidateProvisionalLabel) -> [TickCandidateEvent] {
+            (0..<count).map { offset in
+                let sampleIndex = start + offset * 10
+                return TickCandidateEvent(sampleIndex: sampleIndex,
+                                          timeSeconds: Double(sampleIndex) / sampleRate,
+                                          normalizedEnvelope: Double((offset % 37) + 1),
+                                          nearestAssignedDistanceSeconds: nil,
+                                          provisionalLabel: label)
+            }
+        }
+
+        let candidates = events(count: 500, start: 0, label: .likelyTick)
+            + events(count: 5_000, start: 100_000, label: .unknown)
+            + events(count: 5_000, start: 200_000, label: .likelyNoise)
+
+        let selected = WatchDSP.selectCandidateTraceEvents(candidates)
+        let selectedAgain = WatchDSP.selectCandidateTraceEvents(candidates)
+
+        XCTAssertEqual(selected.count, 3_500)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .likelyTick }.count, 500)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .unknown }.count, 1_000)
+        XCTAssertEqual(selected.filter { $0.provisionalLabel == .likelyNoise }.count, 2_000)
+        XCTAssertEqual(selected.map(\.sampleIndex), selectedAgain.map(\.sampleIndex))
+        XCTAssertEqual(selected.map(\.sampleIndex), selected.map(\.sampleIndex).sorted())
+
+        let underLimitButImbalanced = events(count: 100, start: 0, label: .likelyTick)
+            + events(count: 100, start: 100_000, label: .unknown)
+            + events(count: 2_000, start: 200_000, label: .likelyNoise)
+        let balanced = WatchDSP.selectCandidateTraceEvents(underLimitButImbalanced)
+
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .likelyTick }.count, 100)
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .unknown }.count, 100)
+        XCTAssertEqual(balanced.filter { $0.provisionalLabel == .likelyNoise }.count, 512)
     }
 
     func testAudioCaptureComputesLevelDiagnostics() {
@@ -572,25 +931,38 @@ final class WatchDSPTests: XCTestCase {
         let url = try XCTUnwrap(bundle.url(forResource: name, withExtension: "wav"))
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
-        let frameCount = AVAudioFrameCount(file.length)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
-        try file.read(into: buffer)
-
-        let channelData = try XCTUnwrap(buffer.floatChannelData)
         let channels = max(1, Int(format.channelCount))
-        let frames = Int(buffer.frameLength)
         var samples: [Float] = []
-        samples.reserveCapacity(frames)
+        samples.reserveCapacity(Int(file.length))
 
-        for frame in 0..<frames {
-            var mixed: Float = 0
-            for channel in 0..<channels {
-                mixed += channelData[channel][frame]
+        while file.framePosition < file.length {
+            let remaining = file.length - file.framePosition
+            let requestedFrames = AVAudioFrameCount(min(remaining, 65_536))
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format,
+                                                       frameCapacity: requestedFrames))
+            try file.read(into: buffer, frameCount: requestedFrames)
+            guard buffer.frameLength > 0 else { break }
+            let channelData = try XCTUnwrap(buffer.floatChannelData)
+
+            for frame in 0..<Int(buffer.frameLength) {
+                var mixed: Float = 0
+                for channel in 0..<channels {
+                    mixed += channelData[channel][frame]
+                }
+                samples.append(mixed / Float(channels))
             }
-            samples.append(mixed / Float(channels))
         }
 
+        XCTAssertEqual(samples.count, Int(file.length), "Fixture decoder returned a short read for \(name).")
         return (samples, format.sampleRate)
+    }
+
+    private func loadRecognitionFixtureManifest() throws -> RecognitionFixtureManifest {
+        let bundle = Bundle(for: Self.self)
+        let url = try XCTUnwrap(bundle.url(forResource: "recognition-fixtures",
+                                           withExtension: "json"))
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(RecognitionFixtureManifest.self, from: data)
     }
 
     private func loadFullTudorDeviceCapture() throws -> (samples: [Float], sampleRate: Double) {
@@ -611,6 +983,24 @@ final class WatchDSPTests: XCTestCase {
     private struct LabeledFixture {
         let name: String
         let bph: Int
+    }
+
+    private struct RecognitionFixtureManifest: Decodable {
+        let schemaVersion: Int
+        let fixtures: [RecognitionFixtureSpec]
+    }
+
+    private struct RecognitionFixtureSpec: Decodable {
+        let resourceName: String
+        let sourceCaptureID: String
+        let knownBPH: Int
+        let durationSeconds: Double
+        let expectedAutoOutcome: AutoFixtureOutcome
+    }
+
+    private enum AutoFixtureOutcome: String, Decodable {
+        case recognize
+        case reject
     }
 
     private struct FixtureWindow {
@@ -801,6 +1191,40 @@ final class MeasurementViewModelAudioTests: XCTestCase {
 
         XCTAssertTrue(message.contains("analysis took longer"))
         XCTAssertEqual(audioMeter.stopAndReturnSamplesCallCount, 1)
+    }
+
+    func testDebugExportRunsAsynchronouslyAndPublishesResult() async throws {
+        let samples = makeSyntheticWatchSamples(rateSecondsPerDay: 3, duration: 12)
+        let audioMeter = FakeAudioMeter(samples: samples,
+                                        sampleRate: sampleRate,
+                                        routeDescription: "Synthetic microphone")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AsyncWatchExport-\(UUID().uuidString)", isDirectory: true)
+        let exportOperation: AudioCaptureExportOperation = { _, _ in
+            Thread.sleep(forTimeInterval: 0.10)
+            return AudioCaptureExport(directoryURL: directory,
+                                      audioURL: directory.appendingPathComponent("capture.wav"),
+                                      diagnosticsURL: directory.appendingPathComponent("diagnostics.json"),
+                                      candidateTraceURL: directory.appendingPathComponent("candidates.json"))
+        }
+        let viewModel = MeasurementViewModel(audioMeter: audioMeter,
+                                             measurementDuration: 0.01,
+                                             exportOperation: exportOperation)
+        viewModel.selectedBPH = .manual(.bph28800)
+        viewModel.startMeasurement()
+
+        try await waitUntil(timeout: 15) {
+            if case .result = viewModel.state { return true }
+            return false
+        }
+
+        viewModel.exportLastMeasurement()
+
+        XCTAssertTrue(viewModel.isExporting)
+        XCTAssertEqual(viewModel.exportStatusText, "Preparing debug export…")
+        try await waitUntil(timeout: 2) { !viewModel.isExporting }
+        XCTAssertEqual(viewModel.latestExportURL, directory)
+        XCTAssertEqual(viewModel.exportStatusText, "Debug capture exported.")
     }
 
     func testInjectedAudioUpdatesCaptureStatusWithoutRealMicrophone() async throws {
@@ -1242,6 +1666,9 @@ final class DomainModelTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: quality == .high ? 1 : 0,
+                               spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: quality == .high ? 1 : 0,
                                tickRecallEstimate: quality == .high ? 1 : 0,
                                analysisWindowCount: quality == .high ? 10 : 0,
@@ -1294,6 +1721,9 @@ final class MeasurementStateTests: XCTestCase {
                                clippingRatio: 0,
                                estimatedSnrDb: 12,
                                periodicityScore: 1,
+                               spectralPeriodicityScore: 0,
+                               alternatingSpectralPeriodicityScore: 0,
+                               alternatingSpectralConsensus: 0,
                                recognitionConfidence: 1,
                                tickRecallEstimate: 1,
                                analysisWindowCount: 10,
