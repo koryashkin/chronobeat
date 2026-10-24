@@ -4,6 +4,18 @@ Watch Accuracy Meter is a native iOS app that estimates whether a mechanical wat
 
 The app is intentionally local and focused: no backend, login, cloud sync, watch profiles, amplitude, or professional timegrapher claims. Raw microphone audio stays on the device unless the user explicitly exports a debug capture.
 
+## Screenshots
+
+### Measurement screen
+
+![Watch Accuracy Meter's measurement screen running in the iPhone simulator](Docs/images/watch-accuracy-meter.jpg)
+
+### Current app icon
+
+![Watch Accuracy Meter app icon](Sources/WatchAccuracyMeter/Assets.xcassets/AppIcon.appiconset/AppIcon.png)
+
+[About this project](ABOUT.md)
+
 ## Current MVP
 
 - Swift 6, SwiftUI, and AVFoundation
@@ -73,7 +85,7 @@ The generated `WatchAccuracyMeter.xcodeproj` is tracked in git, so it can be ope
 4. For a physical device, select your Apple development team under Signing & Capabilities if Xcode requests one.
 5. Build and run.
 
-If you regenerate the project for use with another Apple developer account, update `DEVELOPMENT_TEAM` in `project.yml` so the signing choice is preserved.
+The project does not pin an Apple development team. Select your team in Xcode's Signing & Capabilities when building to a physical iPhone.
 
 After changing project structure or resources, regenerate the project:
 

@@ -27,7 +27,6 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chronobeat.WatchAccuracyMeter
-        DEVELOPMENT_TEAM: THT3D327QD
         CODE_SIGN_STYLE: Automatic
         PROVISIONING_PROFILE_SPECIFIER: ""
         TARGETED_DEVICE_FAMILY: "1"

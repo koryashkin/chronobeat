@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1E37CF0FC18060CCC43354F6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A5E41AD1AD00A82E0D7A5E42 /* Assets.xcassets */; };
 		2D1C32611D7DA2CFD785CDB4 /* CandidateReview.swift in Sources */ = {isa = PBXBuildFile; fileRef = D056EE0501372C38E5004991 /* CandidateReview.swift */; };
 		42AE502C5041217E3FE2F066 /* iphone-bottom-28800-0-20s.wav in Resources */ = {isa = PBXBuildFile; fileRef = 8B448663E4B8197B412C8FA8 /* iphone-bottom-28800-0-20s.wav */; };
 		48D39CFEA2788D467BDA1ABB /* TickCandidateFeatureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83F6B61D11009AF5D0EDFD17 /* TickCandidateFeatureTests.swift */; };
@@ -57,6 +58,7 @@
 		97FF9BB9243E8812CA39FEEB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		9C8160892D225E370FD85EF6 /* recognition-fixtures.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "recognition-fixtures.json"; sourceTree = "<group>"; };
 		A273323D2F3782739C71538B /* king-seiko-28800-10-30s.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; path = "king-seiko-28800-10-30s.wav"; sourceTree = "<group>"; };
+		A5E41AD1AD00A82E0D7A5E42 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AD6A032089774DB52785B700 /* WatchDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatchDSPTests.swift; sourceTree = "<group>"; };
 		D056EE0501372C38E5004991 /* CandidateReview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandidateReview.swift; sourceTree = "<group>"; };
 		D933C95A06F6DC88A7DDC8C6 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -88,6 +90,7 @@
 		AEFDDC93504DCDEF4FF9D39D /* WatchAccuracyMeter */ = {
 			isa = PBXGroup;
 			children = (
+				A5E41AD1AD00A82E0D7A5E42 /* Assets.xcassets */,
 				DBAD1C0F989A66CB8C466CAC /* AudioCapture.swift */,
 				0AF96C8506B6D6BBC3F26105 /* AudioCaptureExporter.swift */,
 				27A6AD4636941AB42F65C2EE /* AudioWatchMeter.swift */,
@@ -134,6 +137,7 @@
 			buildConfigurationList = 7444019A89060C45A86197B5 /* Build configuration list for PBXNativeTarget "WatchAccuracyMeter" */;
 			buildPhases = (
 				3AD607147F5FBBC0ADE8445E /* Sources */,
+				EFD6B6D60C1650815DA49F60 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -175,7 +179,6 @@
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					699734845933B7D74D3B1C94 = {
-						DevelopmentTeam = THT3D327QD;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -212,6 +215,14 @@
 				95E36DEB5B15B99C8DA31F31 /* tudor-gmt-28800-0-30s.wav in Resources */,
 				7976C49DABAF55DFAD70CD61 /* tudor-gmt-28800-30-60s.wav in Resources */,
 				919FA1A21384506CCCBF04C7 /* tudor-gmt-28800-40-60s.wav in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EFD6B6D60C1650815DA49F60 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1E37CF0FC18060CCC43354F6 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -280,7 +291,6 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = THT3D327QD;
 				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -438,7 +448,6 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = THT3D327QD;
 				INFOPLIST_FILE = Sources/WatchAccuracyMeter/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
