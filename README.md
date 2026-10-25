@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Sources/WatchAccuracyMeter/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="128" height="128" alt="Watch Accuracy Meter app icon">
+</p>
+
 # Watch Accuracy Meter
 
 Watch Accuracy Meter is an experimental iPhone app that estimates a mechanical watch's rate from microphone ticks. It records one minute of audio, detects a beat pattern, and reports an approximate gain or loss in seconds per day when the signal passes its quality checks.
@@ -11,10 +15,6 @@ The app processes audio on the device. It has no account, backend, analytics, or
 ### Measurement screen (iPhone Simulator)
 
 ![Watch Accuracy Meter's measurement screen running in the iPhone simulator](Docs/images/watch-accuracy-meter.jpg)
-
-### Current app icon
-
-![Watch Accuracy Meter app icon](Sources/WatchAccuracyMeter/Assets.xcassets/AppIcon.appiconset/AppIcon.png)
 
 [Project overview](ABOUT.md) · [Code review and open findings](Docs/CODE_REVIEW.md)
 
