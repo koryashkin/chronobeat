@@ -19,16 +19,20 @@ capture and conservative signal-quality checks.
 
 This is a hobbyist estimate, not a professional timegrapher or watchmaker
 diagnostic. Results depend on watch placement, the phone's microphone, and the
-recording environment. The app does not measure amplitude or beat error. A
-simulator build can demonstrate the interface, but microphone accuracy requires
+recording environment. High and Medium indicate that the current signal-quality
+checks passed; they are not calibrated accuracy probabilities. Low quality asks
+for a retry and hides the rate. The app does not measure amplitude or beat error.
+A simulator build can demonstrate the interface, but microphone accuracy requires
 testing on a physical iPhone. See [the validation plan](Docs/VALIDATION_PLAN.md)
-for the project's current measurement gates.
+for the project's current measurement gates and the [code review](Docs/CODE_REVIEW.md)
+for known implementation gaps.
 
 ## Technology
 
 - Swift 6, SwiftUI, and AVFoundation
 - iOS 17 or later
 - No backend, account, analytics, or cloud sync
+- Raw audio is retained locally for analysis and exported only after a user action
 
 ## Build and use
 

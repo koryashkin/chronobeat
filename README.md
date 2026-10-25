@@ -1,12 +1,14 @@
-# Watch Accuracy Meter for iOS
+# Watch Accuracy Meter
 
-Watch Accuracy Meter is a native iOS app that estimates whether a mechanical watch is running fast or slow by listening to its ticks through the iPhone microphone.
+Watch Accuracy Meter is an experimental iPhone app that estimates a mechanical watch's rate from microphone ticks. It records one minute of audio, detects a beat pattern, and reports an approximate gain or loss in seconds per day when the signal passes its quality checks.
 
-The app is intentionally local and focused: no backend, login, cloud sync, watch profiles, amplitude, or professional timegrapher claims. Raw microphone audio stays on the device unless the user explicitly exports a debug capture.
+The app processes audio on the device. It has no account, backend, analytics, or cloud sync. It does not measure amplitude or beat error and is not a professional timegrapher.
+
+**Status:** Research MVP. The current real-audio fixtures are useful for regression testing, but they do not establish real-world recognition or rate accuracy. Use a physical iPhone and repeated measurements; confirm important results with a reference timegrapher.
 
 ## Screenshots
 
-### Measurement screen
+### Measurement screen (iPhone Simulator)
 
 ![Watch Accuracy Meter's measurement screen running in the iPhone simulator](Docs/images/watch-accuracy-meter.jpg)
 
@@ -14,7 +16,14 @@ The app is intentionally local and focused: no backend, login, cloud sync, watch
 
 ![Watch Accuracy Meter app icon](Sources/WatchAccuracyMeter/Assets.xcassets/AppIcon.appiconset/AppIcon.png)
 
-[About this project](ABOUT.md)
+[Project overview](ABOUT.md) · [Code review and open findings](Docs/CODE_REVIEW.md)
+
+## Reading a result
+
+- `+N sec/day` means the watch appears to gain time; `-N sec/day` means it appears to lose time.
+- **High** and **Medium** are signal-quality labels from the current DSP heuristics. They are not calibrated probabilities or guarantees of rate accuracy. Repeat the measurement, especially for Medium.
+- **Low** displays **Retry needed** in place of a rate. Move the watch, reduce noise, check the beat-rate setting, and record again.
+- **Auto BPH** compares all six supported beat rates. If you already know the watch's beat rate, you can select it manually; a manual selection is not independent proof that the chosen rate is correct.
 
 ## Current MVP
 
@@ -60,13 +69,13 @@ Built-in iPhone microphone
 
 Capture uses `AVAudioSession` with `.record` and `.measurement`. Voice processing and noise-cancel modes are intentionally avoided because they can remove short mechanical tick transients. Noise handling happens in the DSP while the original samples remain available for local analysis and optional export.
 
-Medium and High results require:
+The quality checks consider:
 
 - sufficient tick recall across the full recording;
 - successful analysis windows across the recording;
 - stable periodicity and beat-grid coverage;
 - acceptable outlier levels;
-- an unambiguous BPH match.
+- competing beat-rate and harmonic evidence.
 
 ## Build Requirements
 
@@ -117,7 +126,7 @@ xcodebuild test \
   -destination 'platform=iOS Simulator,name=iPhone 17'
 ```
 
-The suite covers synthetic fast/slow watches, missed ticks, quiet signals, white noise, handling rumble, gain changes, resonance duplicates, impulse and burst noise, wrong BPH rejection, Auto BPH selection, capture state, export metadata, and cancellation behavior.
+The suite covers synthetic fast/slow watches, missed ticks, quiet signals, white noise, handling rumble, gain changes, resonance duplicates, impulse and burst noise, wrong BPH rejection, Auto BPH selection, capture state, export metadata, and cancellation behavior. The repository's GitHub Actions workflow is currently a placeholder; run the simulator suite locally before relying on a change.
 
 Sanitized real-device fixtures are stored in `Tests/WatchAccuracyMeterTests/Fixtures/`:
 
@@ -125,11 +134,11 @@ Sanitized real-device fixtures are stored in `Tests/WatchAccuracyMeterTests/Fixt
 - iPhone bottom-microphone capture at 28,800 bph
 - Tudor GMT at 28,800 bph
 
-These fixtures protect known recognition behavior, but they do not prove 90%
-real-world accuracy. The benchmark gate is eligible only with at least 100
-labeled windows from 20 unique captures, five watches, and two devices. Exact
-`sec/day` is not asserted for real fixtures without a trusted reference
-timegrapher measurement.
+These fixtures protect known recognition behavior, but they do not prove a
+90% real-world success rate. The benchmark gate is eligible only with at least
+100 labeled windows from 20 unique captures, five watches, and two devices.
+Overlapping windows from one capture are correlated. Exact `sec/day` is not
+asserted for real fixtures without a trusted reference timegrapher measurement.
 
 Replay private full captures without adding them to git:
 
@@ -219,3 +228,7 @@ to git. See `Tools/CandidateReview/README.md` for the complete workflow.
 ## Product Limits
 
 Watch Accuracy Meter is a hobbyist phone-based estimate, not a replacement for a Witschi, Weishi, or professional watchmaker diagnosis. The MVP does not measure amplitude or beat error, and its `sec/day` output should be confirmed with repeated measurements under controlled conditions.
+
+## License
+
+No license has been added. Public access to this repository does not grant permission to reuse, modify, or redistribute its code or assets.
